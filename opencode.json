@@ -4,9 +4,13 @@
     "ledger": {
       "type": "local",
       "command": ["python", "-m", "kiraci.mcp_server"],
-      "enabled": true,
-      "environment": { "KIRACI_DB": "/opt/kiraci/data/kiraci.db" }
+      "enabled": true
+    },
+    "queue": {
+      "type": "local",
+      "command": ["python", "-m", "kiraci.queue_mcp"],
+      "enabled": true
     }
   },
-  "tools": { "ledger_*": false }
+  "tools": { "ledger_*": false, "queue_*": false }
 }

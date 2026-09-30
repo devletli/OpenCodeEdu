@@ -3,9 +3,27 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .db import connect
 from .ledger import Ledger
+from .orchestrator import build_status, current_phase
+from .store import Store, find_secret
+
+
+def cmd_status(ledger: Ledger, store: Store) -> dict:
+    now = datetime.now(UTC)
+    text = build_status(store, ledger, now)
+    return {
+        "status_text": text,
+        "balances_eur": {k: v / 100 for k, v in ledger.balances().items()},
+        "phase": current_phase(now),
+        "open_human_tasks": store.open_human_tasks(),
+        "pending_approvals": ledger.pending(),
+        "task_counts": store.task_counts(),
+        "last_tick": store.kv_get("last_tick", "never"),
+    }
 
 
 def main() -> None:
@@ -24,10 +42,35 @@ def main() -> None:
     i.add_argument("--amount-eur", type=float, required=True)
     i.add_argument("--ref", required=True, help="payment provider transaction id")
     i.add_argument("--note", default="")
+    sub.add_parser("status", help="full system status")
+    h = sub.add_parser("human", help="human inbox tasks")
+    hsub = h.add_subparsers(dest="hcmd", required=True)
+    hsub.add_parser("list", help="list open human tasks")
+    ha = hsub.add_parser("add", help="file a human task")
+    ha.add_argument("--kind", required=True)
+    ha.add_argument("--title", required=True)
+    ha.add_argument("--instructions", required=True)
+    ha.add_argument("--url", default="")
+    ha.add_argument("--key", required=True, help="dedupe key")
+    hd = hsub.add_parser("done", help="resolve a human task")
+    hd.add_argument("id", type=int)
+    hd.add_argument("--note", default="")
+    hx = hsub.add_parser("dismiss", help="dismiss a human task")
+    hx.add_argument("id", type=int)
+    t = sub.add_parser("tasks", help="queued tasks")
+    tsub = t.add_subparsers(dest="tcmd", required=True)
+    tl = tsub.add_parser("list", help="list tasks")
+    tl.add_argument("--status", default=None)
+    sub.add_parser("kill", help="stop the daemon after this tick")
+    sub.add_parser("resume", help="clear KILL and PAUSE files")
+    sub.add_parser("pause", help="pause dispatch")
     args = p.parse_args()
 
-    ledger = Ledger(connect())
+    conn = connect()
+    ledger = Ledger(conn)
+    store = Store(conn)
     who = getpass.getuser()
+    root = Path.cwd()
     if args.cmd == "init":
         ledger.init_genesis()
         out = ledger.balances()
@@ -39,9 +82,40 @@ def main() -> None:
         out = ledger.approve(args.id, who)
     elif args.cmd == "reject":
         out = ledger.reject(args.id, who, args.reason)
-    else:
+    elif args.cmd == "income":
         out = ledger.record_income(round(args.amount_eur * 100), args.ref, args.note)
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    elif args.cmd == "status":
+        out = cmd_status(ledger, store)
+    elif args.cmd == "human":
+        if args.hcmd == "list":
+            out = store.open_human_tasks()
+        elif args.hcmd == "add":
+            out = store.add_human_task(
+                kind=args.kind, title=args.title, instructions=args.instructions,
+                url=args.url, dedupe_key=args.key, created_by=who,
+            )
+        elif args.hcmd == "done":
+            secret = find_secret(args.note)
+            if secret:
+                out = {"status": "error",
+                       "reason": f"refused: note {secret}; secrets do not belong here"}
+            else:
+                out = store.resolve_human_task(args.id, note=args.note)
+        else:
+            out = store.resolve_human_task(args.id, status="dismissed")
+    elif args.cmd == "tasks":
+        out = store.list_tasks(status=args.status)
+    elif args.cmd == "kill":
+        (root / "data" / "KILL").touch()
+        out = {"status": "ok", "detail": "KILL file created"}
+    elif args.cmd == "resume":
+        (root / "data" / "KILL").unlink(missing_ok=True)
+        (root / "data" / "PAUSE").unlink(missing_ok=True)
+        out = {"status": "ok", "detail": "KILL and PAUSE cleared"}
+    else:
+        (root / "data" / "PAUSE").touch()
+        out = {"status": "ok", "detail": "PAUSE file created"}
+    print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
 
 
 if __name__ == "__main__":

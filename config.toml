@@ -1,0 +1,29 @@
+[models]
+# tier per agent; the actual model names come from env (provider/model format)
+brain = "strong"
+judge = "mid"
+builder = "mid"
+scout = "cheap"
+seller = "cheap"
+treasurer = "cheap"
+diplomat = "cheap"
+chronicler = "cheap"
+
+[cost_cents_per_run]
+# estimated cost of one run; use 0 for free models. Charged to the "tokens" bucket.
+brain = 5
+judge = 3
+builder = 3
+scout = 0
+seller = 0
+treasurer = 0
+diplomat = 0
+chronicler = 0
+
+[limits]
+tick_seconds = 30
+run_timeout_seconds = 1200
+max_task_attempts = 3
+yellow_daily_auto_approve_cents = 1000
+min_free_disk_mb = 1024
+max_consecutive_failures = 5

@@ -1,0 +1,22 @@
+[Unit]
+Description=Kiraci autonomous agent daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kiraci
+WorkingDirectory=/opt/kiraci
+EnvironmentFile=/opt/kiraci/.env
+Environment=PATH=/opt/kiraci/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=KIRACI_DB=/opt/kiraci/data/kiraci.db
+ExecStart=/opt/kiraci/.venv/bin/python -m kiraci.orchestrator
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/kiraci
+
+[Install]
+WantedBy=multi-user.target

@@ -5,3 +5,8 @@ data/*.db
 data/*.db-*
 .pytest_cache/
 .ruff_cache/
+.env
+data/
+workspace/
+HUMAN_INBOX.md
+data/outputs/

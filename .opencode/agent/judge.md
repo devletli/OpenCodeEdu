@@ -1,7 +1,6 @@
 ---
 description: Judge. Test, rule and risk auditor. Read-only and not modifiable by other agents.
 mode: subagent
-model: <mid-model>
 temperature: 0.0
 tools:
   write: false

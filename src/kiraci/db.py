@@ -4,6 +4,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .store import QUEUE_SCHEMA
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ledger (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,4 +55,5 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    conn.executescript(QUEUE_SCHEMA)
     return conn
