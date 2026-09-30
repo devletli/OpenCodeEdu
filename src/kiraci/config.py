@@ -10,12 +10,24 @@ TIER_ENV = {
     "cheap": "KIRACI_MODEL_CHEAP",
 }
 
+REVENUE_DEFAULTS = {
+    "payment_fee_percent": 5,
+    "payment_fee_fixed_cents": 50,
+    "venture_budget_cents": 1500,
+    "max_active_ventures": 3,
+    "poll_minutes": 15,
+    "min_sources_per_research": 3,
+    "payment_provider": "lemonsqueezy",
+    "payment_store_id": "",
+}
+
 
 @dataclass(frozen=True)
 class Config:
     models: dict[str, str] = field(default_factory=dict)  # agent -> tier
     costs: dict[str, int] = field(default_factory=dict)  # agent -> cents per run
     limits: dict[str, int] = field(default_factory=dict)
+    revenue: dict = field(default_factory=lambda: dict(REVENUE_DEFAULTS))
 
     def tier_for(self, agent: str) -> str | None:
         return self.models.get(agent)
@@ -29,6 +41,9 @@ class Config:
 
     def cost_for(self, agent: str) -> int:
         return int(self.costs.get(agent, 0))
+
+    def revenue_value(self, key: str):
+        return self.revenue.get(key, REVENUE_DEFAULTS.get(key))
 
     def missing_tier_envs(self) -> list[str]:
         """Env var names (sorted) whose tier is used by at least one agent but unset."""
@@ -44,8 +59,12 @@ def load_config(path: str | None = None) -> Config:
     path = path or default_path()
     with open(path, "rb") as f:
         data = tomllib.load(f)
+    revenue = dict(REVENUE_DEFAULTS)
+    for k, v in data.get("revenue", {}).items():
+        revenue[k] = v
     return Config(
         models=dict(data.get("models", {})),
         costs={k: int(v) for k, v in data.get("cost_cents_per_run", {}).items()},
         limits={k: int(v) for k, v in data.get("limits", {}).items()},
+        revenue=revenue,
     )

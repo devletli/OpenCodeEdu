@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS human_tasks (
     ts            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     kind          TEXT NOT NULL CHECK (kind IN
                   ('login','account_setup','identity_verification',
-                   'payment_method_setup','secret_provisioning','red_tier_approval')),
+                   'payment_method_setup','secret_provisioning','red_tier_approval',
+                   'logged_in_action')),
     title         TEXT NOT NULL,
     instructions  TEXT NOT NULL,
     url           TEXT NOT NULL DEFAULT '',
@@ -58,6 +59,38 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS ventures (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    name          TEXT NOT NULL UNIQUE,
+    slug          TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN
+                  ('digital_product','bounty','report','micro_saas','other')),
+    hypothesis    TEXT NOT NULL,
+    score         REAL NOT NULL CHECK (score BETWEEN 0 AND 10),
+    status        TEXT NOT NULL DEFAULT 'researching' CHECK (status IN
+                  ('researching','validating','building','live','paused','dead')),
+    evidence      TEXT NOT NULL,
+    external_product_id TEXT,
+    death_note    TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    provider      TEXT NOT NULL,
+    order_id      TEXT NOT NULL,
+    product_id    TEXT NOT NULL DEFAULT '',
+    venture_id    INTEGER REFERENCES ventures(id),
+    currency      TEXT NOT NULL,
+    gross_cents   INTEGER NOT NULL,
+    recorded_cents INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL CHECK (status IN
+                  ('recorded','fx_unhandled','refunded','refund_recorded','ignored')),
+    UNIQUE (provider, order_id)
+);
 """
 
 TASK_AGENTS = ("scout", "builder", "seller", "treasurer", "diplomat", "chronicler")
@@ -69,6 +102,7 @@ HUMAN_KINDS = (
     "payment_method_setup",
     "secret_provisioning",
     "red_tier_approval",
+    "logged_in_action",
 )
 
 TASK_STATUSES = ("pending", "running", "blocked", "done", "failed", "rejected", "cancelled")
@@ -225,7 +259,7 @@ class Store:
             return {"status": "error", "reason": f"unknown task status: {status}"}
         allowed = {
             "priority", "requires_review", "review", "blocked_on", "not_before",
-            "attempts", "branch", "result_path", "result_summary",
+            "attempts", "branch", "result_path", "result_summary", "prompt", "title",
         }
         unknown = set(fields) - allowed
         if unknown:

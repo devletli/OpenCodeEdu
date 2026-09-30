@@ -4,6 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .migrate import migrate
 from .store import QUEUE_SCHEMA
 
 SCHEMA = """
@@ -15,7 +16,8 @@ CREATE TABLE IF NOT EXISTS ledger (
     delta_cents  INTEGER NOT NULL CHECK (delta_cents <> 0),
     agent        TEXT NOT NULL,
     ref          TEXT UNIQUE,
-    note         TEXT NOT NULL DEFAULT ''
+    note         TEXT NOT NULL DEFAULT '',
+    venture_id   INTEGER
 );
 
 CREATE TRIGGER IF NOT EXISTS ledger_no_update
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     reason        TEXT NOT NULL DEFAULT '',
     decided_by    TEXT,
     decided_at    TEXT,
-    entry_id      INTEGER REFERENCES ledger(id)
+    entry_id      INTEGER REFERENCES ledger(id),
+    venture_id    INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_ledger_bucket ON ledger(bucket);
@@ -56,4 +59,5 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     conn.executescript(QUEUE_SCHEMA)
+    migrate(conn)
     return conn

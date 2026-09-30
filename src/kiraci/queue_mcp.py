@@ -6,6 +6,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from . import ventures
+from .config import load_config
 from .db import connect
 from .notify import notify_human
 from .store import Store
@@ -79,6 +81,51 @@ def list_human_tasks(status: str = "open") -> list[dict]:
     if status not in ("open", "done", "dismissed"):
         return [{"status": "error", "reason": f"unknown status: {status}"}]
     return _store.list_human_tasks(status=status)
+
+
+def _revenue_cfg():
+    try:
+        return load_config()
+    except (OSError, ValueError):
+        from .config import Config
+        return Config()
+
+
+@mcp.tool()
+def create_venture(
+    name: str,
+    kind: str,
+    hypothesis: str,
+    score: float,
+    evidence_paths: list[str],
+    caller: str,
+) -> dict:
+    """Propose a venture. Needs score >= 6 and 2+ research files with 3+ sources."""
+    cfg = _revenue_cfg()
+    return ventures.create_venture(
+        _store, Path.cwd(), name=name, kind=kind, hypothesis=hypothesis,
+        score=score, evidence_paths=evidence_paths or [], caller=caller,
+        max_active=int(cfg.revenue_value("max_active_ventures")),
+        min_sources=int(cfg.revenue_value("min_sources_per_research")),
+    )
+
+
+@mcp.tool()
+def update_venture(
+    venture_id: int, status: str, caller: str, death_note: str = "",
+) -> dict:
+    """Move a venture through its gates. Illegal transitions are rejected."""
+    try:
+        return ventures.update_venture(
+            _store, Path.cwd(), venture_id, status, death_note=death_note)
+    except ValueError as e:
+        return {"status": "error", "reason": str(e)}
+
+
+@mcp.tool()
+def list_ventures(status: str | None = None) -> list[dict]:
+    """List ventures, optionally filtered by status."""
+    return ventures.list_ventures(_store.conn, status)
 
 
 if __name__ == "__main__":

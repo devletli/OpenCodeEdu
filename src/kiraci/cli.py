@@ -6,8 +6,10 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import ventures
 from .db import connect
 from .ledger import Ledger
+from .metrics import metrics_headline
 from .orchestrator import build_status, current_phase
 from .store import Store, find_secret
 
@@ -15,6 +17,9 @@ from .store import Store, find_secret
 def cmd_status(ledger: Ledger, store: Store) -> dict:
     now = datetime.now(UTC)
     text = build_status(store, ledger, now)
+    attention = store.conn.execute(
+        "SELECT provider, order_id, currency, gross_cents, status FROM payments"
+        " WHERE status IN ('fx_unhandled','ignored') ORDER BY id").fetchall()
     return {
         "status_text": text,
         "balances_eur": {k: v / 100 for k, v in ledger.balances().items()},
@@ -23,6 +28,9 @@ def cmd_status(ledger: Ledger, store: Store) -> dict:
         "pending_approvals": ledger.pending(),
         "task_counts": store.task_counts(),
         "last_tick": store.kv_get("last_tick", "never"),
+        "ventures": ventures.list_ventures(store.conn),
+        "payments_needing_attention": [dict(r) for r in attention],
+        "metrics_headline": metrics_headline(Path.cwd()),
     }
 
 
@@ -61,6 +69,20 @@ def main() -> None:
     tsub = t.add_subparsers(dest="tcmd", required=True)
     tl = tsub.add_parser("list", help="list tasks")
     tl.add_argument("--status", default=None)
+    v = sub.add_parser("venture", help="ventures (human-only)")
+    vsub = v.add_subparsers(dest="vcmd", required=True)
+    vsub.add_parser("list", help="list ventures")
+    vs = vsub.add_parser("show", help="show a venture")
+    vs.add_argument("id", type=int)
+    vp = vsub.add_parser("set-product",
+                         help="attach a storefront product id (goes live)")
+    vp.add_argument("id", type=int)
+    vp.add_argument("external_product_id")
+    vz = vsub.add_parser("pause", help="pause a venture")
+    vz.add_argument("id", type=int)
+    vk = vsub.add_parser("kill", help="kill a venture (needs a 80+ char note)")
+    vk.add_argument("id", type=int)
+    vk.add_argument("--note", required=True)
     sub.add_parser("kill", help="stop the daemon after this tick")
     sub.add_parser("resume", help="clear KILL and PAUSE files")
     sub.add_parser("pause", help="pause dispatch")
@@ -105,6 +127,36 @@ def main() -> None:
             out = store.resolve_human_task(args.id, status="dismissed")
     elif args.cmd == "tasks":
         out = store.list_tasks(status=args.status)
+    elif args.cmd == "venture":
+        if args.vcmd == "list":
+            out = ventures.list_ventures(store.conn)
+        elif args.vcmd == "show":
+            venture = ventures.get_venture(store.conn, args.id)
+            if venture is None:
+                out = {"status": "error", "reason": "unknown venture id"}
+            else:
+                spent = ventures.venture_spent_cents(store.conn, args.id)
+                earned = ventures.venture_income_cents(store.conn, args.id)
+                orders = [dict(r) for r in store.conn.execute(
+                    "SELECT * FROM payments WHERE venture_id=? ORDER BY id",
+                    (args.id,))]
+                out = {"status": "ok", "venture": venture,
+                       "spent_cents": spent, "income_cents": earned,
+                       "payments": orders}
+        elif args.vcmd == "set-product":
+            out = ventures.set_external_product(
+                store, root, args.id, args.external_product_id)
+        elif args.vcmd == "pause":
+            try:
+                out = ventures.update_venture(store, root, args.id, "paused")
+            except ValueError as e:
+                out = {"status": "error", "reason": str(e)}
+        else:
+            try:
+                out = ventures.update_venture(store, root, args.id, "dead",
+                                              death_note=args.note)
+            except ValueError as e:
+                out = {"status": "error", "reason": str(e)}
     elif args.cmd == "kill":
         (root / "data" / "KILL").touch()
         out = {"status": "ok", "detail": "KILL file created"}

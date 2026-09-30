@@ -79,6 +79,25 @@ def notify_human(task: dict, *, root: Path | str | None = None, store=None) -> P
     return inbox
 
 
+def send_info(text: str, store, *, root: Path | str | None = None) -> None:
+    """One-way informational message (day-90 review, weekly metrics digest).
+
+    Telegram if configured, plus a dated line in HUMAN_INBOX.md. Never a human
+    task, never raises.
+    """
+    _send_telegram(text)
+    try:
+        root = Path(root) if root else Path.cwd()
+        inbox = root / "HUMAN_INBOX.md"
+        if not inbox.exists():
+            inbox.write_text("# Human Inbox\n", encoding="utf-8")
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        with inbox.open("a", encoding="utf-8") as f:
+            f.write(f"\n[{day}] INFO: {text}\n")
+    except OSError as e:
+        print(f"kiraci: info notify failed: {e}", file=sys.stderr)
+
+
 def maybe_send_digest(store, *, root: Path | str | None = None) -> bool:
     """Send a digest of all open tasks every 6 h while any are open."""
     if _telegram_config() is None:

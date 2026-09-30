@@ -24,23 +24,25 @@ class Ledger:
             raise
 
     def _insert(self, kind: str, bucket: str, delta: int, agent: str,
-                ref: str | None, note: str) -> int:
+                ref: str | None, note: str, venture_id: int | None = None) -> int:
         cur = self.conn.execute(
-            "INSERT INTO ledger(kind,bucket,delta_cents,agent,ref,note) VALUES (?,?,?,?,?,?)",
-            (kind, bucket, delta, agent, ref, note),
+            "INSERT INTO ledger(kind,bucket,delta_cents,agent,ref,note,venture_id)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (kind, bucket, delta, agent, ref, note, venture_id),
         )
         return int(cur.lastrowid)
 
     def _log_approval(self, agent: str, bucket: str, amount: int, purpose: str,
                       tier: str, status: str, reason: str,
-                      decided_by: str | None = None, entry_id: int | None = None) -> int:
+                      decided_by: str | None = None, entry_id: int | None = None,
+                      venture_id: int | None = None) -> int:
         cur = self.conn.execute(
             """INSERT INTO approvals(agent,bucket,amount_cents,purpose,tier,status,reason,
-                                     decided_by,decided_at,entry_id)
+                                     decided_by,decided_at,entry_id,venture_id)
                VALUES (?,?,?,?,?,?,?,?,CASE WHEN ? IS NULL THEN NULL
-                       ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,?)""",
+                       ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,?,?)""",
             (agent, bucket, amount, purpose, tier, status, reason,
-             decided_by, decided_by, entry_id),
+             decided_by, decided_by, entry_id, venture_id),
         )
         return int(cur.lastrowid)
 
@@ -78,7 +80,8 @@ class Ledger:
         return [dict(r) for r in rows]
 
     # ---------- spend requests (open to agents) ----------
-    def request_spend(self, agent: str, bucket: str, amount_cents: int, purpose: str) -> dict:
+    def request_spend(self, agent: str, bucket: str, amount_cents: int, purpose: str,
+                      venture_id: int | None = None) -> dict:
         with self._tx():
             bal = self._balances()
             d = decide(
@@ -90,20 +93,23 @@ class Ledger:
                 spent_today=self._spent_today(bucket),
             )
             if d.status == "approved":
-                entry_id = self._insert("expense", bucket, -amount_cents, agent, None, purpose)
+                entry_id = self._insert("expense", bucket, -amount_cents, agent, None,
+                                        purpose, venture_id)
                 aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
-                                         "executed", d.reason, "policy", entry_id)
+                                         "executed", d.reason, "policy", entry_id,
+                                         venture_id)
                 return {"status": "approved", "approval_id": aid, "entry_id": entry_id,
                         "reason": d.reason}
             if d.status == "pending":
                 aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
-                                         "pending", d.reason)
+                                         "pending", d.reason, venture_id=venture_id)
                 return {"status": "pending", "approval_id": aid, "tier": d.tier,
                         "reason": d.reason}
             # rejected: still log for auditing (skip amount <= 0 to satisfy the CHECK)
             if amount_cents > 0:
                 self._log_approval(agent, bucket, amount_cents, purpose, "none",
-                                   "rejected", d.reason, "policy")
+                                   "rejected", d.reason, "policy",
+                                   venture_id=venture_id)
             return {"status": "rejected", "reason": d.reason}
 
     # ---------- HUMAN / SYSTEM ONLY (never exposed over MCP) ----------
@@ -116,7 +122,7 @@ class Ledger:
                              "genesis budget")
 
     def record_income(self, amount_cents: int, ref: str, note: str = "",
-                      agent: str = "webhook") -> dict:
+                      agent: str = "webhook", venture_id: int | None = None) -> dict:
         """Income split: 50% experiment, 30% emergency, 20% owner. Idempotent via ref."""
         if amount_cents <= 0:
             raise ValueError("income must be positive")
@@ -130,9 +136,34 @@ class Ledger:
             owner = amount_cents - reinvest - reserve
             for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
                 if part > 0:
-                    self._insert("income", bucket, part, agent, f"{ref}:{bucket}", note)
+                    self._insert("income", bucket, part, agent, f"{ref}:{bucket}",
+                                 note, venture_id)
             return {"status": "recorded", "experiment": reinvest, "emergency": reserve,
                     "owner": owner}
+
+    def record_refund(self, amount_cents: int, ref: str, note: str = "",
+                      agent: str = "webhook", venture_id: int | None = None) -> dict:
+        """Mirror of record_income with negative deltas. Idempotent via ref.
+
+        Refunds are the ONLY path that may push a bucket negative; spends still
+        require a positive balance (see decide()).
+        """
+        if amount_cents <= 0:
+            raise ValueError("refund must be positive")
+        if not ref:
+            raise ValueError("payment reference (ref) is required")
+        with self._tx():
+            if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (f"{ref}:experiment",)).fetchone():
+                return {"status": "duplicate", "ref": ref}
+            reinvest = amount_cents * 50 // 100
+            reserve = amount_cents * 30 // 100
+            owner = amount_cents - reinvest - reserve
+            for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
+                if part > 0:
+                    self._insert("refund", bucket, -part, agent, f"{ref}:{bucket}",
+                                 note, venture_id)
+            return {"status": "recorded", "experiment": -reinvest, "emergency": -reserve,
+                    "owner": -owner}
 
     def approve(self, approval_id: int, decided_by: str) -> dict:
         with self._tx():
@@ -147,7 +178,8 @@ class Ledger:
                     (decided_by, approval_id))
                 return {"status": "rejected", "reason": "insufficient balance"}
             entry_id = self._insert("expense", row["bucket"], -row["amount_cents"],
-                                    row["agent"], None, row["purpose"])
+                                    row["agent"], None, row["purpose"],
+                                    row["venture_id"])
             self.conn.execute(
                 """UPDATE approvals SET status='executed', decided_by=?, entry_id=?,
                    decided_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?""",

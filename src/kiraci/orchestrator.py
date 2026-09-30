@@ -12,11 +12,14 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import builder_flow
+from . import builder_flow, product_check, ventures
+from . import metrics as metrics_mod
+from . import payments as payments_mod
+from . import skills as skills_mod
 from .config import load_config
 from .db import connect
 from .ledger import Ledger
-from .notify import maybe_send_digest, notify_human
+from .notify import maybe_send_digest, notify_human, send_info
 from .review import review_approvals
 from .store import ORCHESTRATOR, Store, utcnow_iso
 from .testing import FakeRunner
@@ -108,6 +111,28 @@ def runway_str(total_cents: int, burn_per_day: int) -> str:
 def slugify(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-")
     return slug or "task"
+
+
+def genesis_age_days(conn, now: datetime) -> int | None:
+    """Days since the first fund entry (the day-90 clock). None if no genesis."""
+    ts = metrics_mod.genesis_ts(conn)
+    if ts is None:
+        return None
+    try:
+        genesis = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        try:
+            genesis = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+    return (now - genesis).days
+
+
+def metrics_line(root: Path) -> str:
+    latest = metrics_mod.latest_metrics(root)
+    if latest is None:
+        return "No metrics report exists yet."
+    return f"Latest metrics report: {latest}."
 
 
 def build_status(store: Store, ledger: Ledger, now: datetime) -> str:
@@ -211,13 +236,15 @@ class Orchestrator:
         ) or "(none open)"
         prompt = (
             f"Kiraci planning session ({job}) on {now.strftime('%Y-%m-%d %H:%M UTC')}.\n"
-            f"Status:\n{status_text}\n\nRecent finished tasks:\n{fin_lines}\n\n"
+            f"Status:\n{status_text}\n\n{metrics_line(self.root)}\n\n"
+            f"Recent finished tasks:\n{fin_lines}\n\n"
             f"Open human tasks:\n{human_lines}\n\n"
             "Create at most 5 new tasks with `queue_create_task` (always pass "
             "caller=\"brain\"). Score ideas per KIRACI.md Section 5, reject below 6, "
             "prefer cheap reversible experiments, demand evidence. Titles of tasks "
             "that directly aim at revenue start with \"[revenue]\".\n"
             f"{extra}\n"
+            f"{self._wind_down_instruction(now)}"
             "Your final answer is a short summary: decisions taken, tasks created, and why."
         )
         timeout = int(self.config.limits.get("run_timeout_seconds", 1200))
@@ -232,6 +259,172 @@ class Orchestrator:
         if res.skipped_reason is not None:
             return f"brain skipped ({res.skipped_reason})", False
         return f"brain session ({'ok' if res.ok else 'failed'})", res.ok
+
+    def _wind_down_instruction(self, now: datetime) -> str:
+        """Day-60 rule: runway under 30 days means the brain must plan a wind-down."""
+        age = genesis_age_days(self.ledger.conn, now)
+        if age is None or not 60 <= age < 90:
+            return ""
+        burn = daily_burn_cents(self.ledger)
+        total = self.ledger.total_balance()
+        runway = total / burn if burn > 0 else float("inf")
+        if runway >= 30:
+            return ""
+        return (
+            "WIND-DOWN: the runway is under 30 days past day 60. Plan to stop all "
+            "paid model use (free runs only), list what to keep running, and name "
+            "the cheapest path to one more euro of revenue.\n"
+        )
+
+    def _publish_handoff(self, now: datetime) -> list[str]:
+        """After a builder merge: validate venture packages, zip, file publish tasks."""
+        events: list[str] = []
+        for v in ventures.list_ventures(self.store.conn, "building"):
+            slug = v["slug"]
+            if v["external_product_id"]:
+                continue
+            pkg = self.root / "products" / slug
+            if not pkg.is_dir():
+                continue
+            problems = product_check.check_product(pkg)
+            if not problems:
+                try:
+                    product_check.build_dist_zip(pkg)
+                except OSError as e:
+                    events.append(f"handoff {slug}: zip failed ({e})")
+                    continue
+                res = self.store.add_human_task(
+                    kind="logged_in_action",
+                    title=f"Publish listing: {v['name']}",
+                    instructions=(
+                        f"Publish the '{v['name']}' product in the storefront "
+                        "dashboard:\n"
+                        f"1. Create a new listing. Title, price (EUR) and "
+                        f"description are in products/{slug}/listing.md - copy "
+                        "the description verbatim (it ends with the AI "
+                        "disclosure line).\n"
+                        f"2. Upload products/{slug}/dist/{slug}.zip as the "
+                        "customer deliverable.\n"
+                        "3. Keep tax/discount settings neutral (prices are final; "
+                        "the provider handles tax).\n"
+                        "4. When the listing is live, close the loop with: "
+                        f"python -m kiraci.cli venture set-product {v['id']} "
+                        "<external_product_id>"),
+                    dedupe_key=f"publish:{slug}",
+                    created_by=ORCHESTRATOR)
+                if res.get("status") == "created":
+                    try:
+                        notify_human(res["task"], root=self.root, store=self.store)
+                    except (OSError, sqlite3.Error) as e:
+                        print(f"kiraci: handoff notify failed: {e}", file=sys.stderr)
+                    events.append(f"handoff {slug}: publish task filed")
+                self.store.kv_set(f"publish_rounds:{slug}", "0")
+                continue
+            fix_title = f"[venture:{slug}] fix product package"
+            still_open = any(
+                t["title"] == fix_title and t["status"] in ("pending", "running")
+                for t in self.store.list_tasks(limit=200))
+            if still_open:
+                continue
+            rounds = int(self.store.kv_get(f"publish_rounds:{slug}", "0") or 0) + 1
+            self.store.kv_set(f"publish_rounds:{slug}", str(rounds))
+            if rounds > 2:
+                ventures.update_venture(self.store, self.root, v["id"], "paused")
+                journal = self.root / "journal" / f"{now.strftime('%Y-%m-%d')}.md"
+                journal.parent.mkdir(parents=True, exist_ok=True)
+                with journal.open("a", encoding="utf-8") as f:
+                    f.write(f"\n## Venture #{v['id']} paused\n\nProduct package "
+                            f"failed validation {rounds} times: "
+                            + "; ".join(problems[:5]) + "\n")
+                events.append(f"handoff {slug}: paused after {rounds} failed rounds")
+            else:
+                r = self.store.create_task(
+                    agent="builder", title=fix_title,
+                    prompt=("The product package at products/" + slug + "/ failed "
+                            "validation. Fix every problem below, keep "
+                            "deliverable/ intact:\n- " + "\n- ".join(problems)),
+                    priority=4, created_by=ORCHESTRATOR)
+                if r.get("status") == "created":
+                    events.append(f"handoff {slug}: fix task queued (round {rounds})")
+                else:
+                    events.append(f"handoff {slug}: fix queue failed ({r.get('reason')})")
+        return events
+
+    def _maybe_poll(self, now: datetime) -> str | None:
+        """Payment poll every poll_minutes, around the clock, no LLM."""
+        mins = int(self.config.revenue_value("poll_minutes"))
+        last = self.store.kv_get("payments_last_poll")
+        if last:
+            try:
+                if now - datetime.fromisoformat(last) < timedelta(minutes=mins):
+                    return None
+            except ValueError:
+                pass
+        self.store.kv_set("payments_last_poll", now.isoformat())
+        name = str(self.config.revenue_value("payment_provider"))
+        key = os.environ.get("LEMONSQUEEZY_API_KEY", "")
+        provider = None
+        if key and name == "lemonsqueezy":
+            provider = payments_mod.LemonSqueezyProvider(
+                key, store_id=str(self.config.revenue_value("payment_store_id")))
+        res = payments_mod.poll(
+            self.store, self.ledger, provider_name=name, api_key=key,
+            fee_percent=int(self.config.revenue_value("payment_fee_percent")),
+            fee_fixed=int(self.config.revenue_value("payment_fee_fixed_cents")),
+            provider=provider, now=now)
+        status = res.get("status")
+        if status == "no-key-no-live":
+            return None
+        if status == "no-key":
+            if res.get("human_task") == "created":
+                return "payments: env-payments task filed"
+            return None
+        if status == "fetch-failed":
+            return f"payments: fetch failed ({res.get('reason')})"
+        if status == "error":
+            return f"payments: {res.get('reason')}"
+        parts = [f"{k}={res.get(k, 0)}" for k in
+                 ("recorded", "ignored", "fx_unhandled", "refunds") if res.get(k)]
+        return "payments:" + (",".join(parts) if parts else f"fetched={res.get('fetched', 0)}")
+
+    def _day90(self, now: datetime, blocked: bool) -> str | None:
+        """One-time day-90 review: brain + chronicler write journal/day-90-review.md."""
+        if self.store.kv_get("day90_done"):
+            return None
+        age = genesis_age_days(self.ledger.conn, now)
+        if age is None or age < 90:
+            return None
+        if blocked:
+            return "day90 deferred (paused/survival)"
+        if (self.config.model_for("brain") is None
+                or self.config.model_for("chronicler") is None):
+            return "day90 skipped (no model)"
+        status_text = build_status(self.store, self.ledger, now)
+        timeout = int(self.config.limits.get("run_timeout_seconds", 1200))
+        bprompt = (
+            "Day-90 review for the Kiraci system. Write exactly one of the two "
+            "outcomes: EITHER monthly income >= monthly expenses (break-even "
+            "reached, with the numbers) OR a specific 'why it did not work' "
+            "report. End with a recommendation: continue / change strategy / "
+            f"shut down.\n\nStatus:\n{status_text}")
+        cprompt = (
+            "Write the day-90 retrospective for journal/day-90-review.md with the "
+            "same structure: break-even verdict with numbers or a specific "
+            "why-not report, plus a continue / change strategy / shut down "
+            f"recommendation.\n\nStatus:\n{status_text}")
+        bres = self.runner.run("brain", bprompt, self.root, timeout)
+        cres = self.runner.run("chronicler", cprompt, self.root, timeout)
+        if bres.skipped_reason is not None or cres.skipped_reason is not None:
+            return "day90 skipped (run refused)"
+        path = self.root / "journal" / "day-90-review.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"# Day-90 review ({now.strftime('%Y-%m-%d')})\n\n## Brain\n{bres.text}\n\n"
+            f"## Chronicler\n{cres.text}\n", encoding="utf-8")
+        self.store.kv_set("day90_done", "1")
+        send_info("Day-90 review is ready in journal/day-90-review.md. "
+                  "Continuing is the owner's decision.", self.store, root=self.root)
+        return "day90 review written"
 
     def _git_snapshot(self, now: datetime) -> str:
         def git(*args):
@@ -329,11 +522,21 @@ class Orchestrator:
                 task_id=tid, store=self.store, runner=self.runner,
                 config=self.config, repo_root=self.root, now=now,
             )
+            extra = ""
+            if outcome == "done":
+                hand = self._publish_handoff(now)
+                if hand:
+                    extra = " [" + "; ".join(hand) + "]"
             self._note_outcome(None if outcome == "skipped" else outcome == "done"
                                or outcome == "rejected", now)
-            return f"builder task #{tid} {outcome}"
+            return f"builder task #{tid} {outcome}{extra}"
         self.store.set_status(tid, "running")
-        res = self.runner.run(task["agent"], task["prompt"], self.root, timeout)
+        prompt = task["prompt"]
+        sel = skills_mod.select_for_task(self.root, task["agent"],
+                                         task["title"], prompt)
+        if sel:
+            prompt = prompt + "\n\n## Relevant skills from past work\n" + sel
+        res = self.runner.run(task["agent"], prompt, self.root, timeout)
         if res.skipped_reason is not None:
             self.store.set_status(tid, "pending", not_before=tomorrow_0005(now),
                                   result_summary=f"skipped: {res.skipped_reason}")
@@ -350,17 +553,49 @@ class Orchestrator:
                                       result_summary=summary)
             self._note_outcome(False, now)
             return f"task #{tid} failed (attempt {attempts})"
+        text_to_save = res.text
+        reran = False
+        if task["agent"] == "scout":
+            text_to_save, reran = self._scout_evidence(task, res.text)
         try:
-            result_path = self._write_result(task, res.text, now)
+            result_path = self._write_result(task, text_to_save, now)
         except OSError as e:
             result_path = ""
-            res_text = f"[result file write failed: {e}]\n{res.text}"
+            res_text = f"[result file write failed: {e}]\n{text_to_save}"
         else:
-            res_text = res.text
+            res_text = text_to_save
+        ingested = ""
+        if task["agent"] == "chronicler" and task["title"] == "Weekly retrospective":
+            saved = []
+            for name, content in skills_mod.extract_skill_blocks(res.text):
+                if skills_mod.save_skill(self.root, name, content) is None:
+                    saved.append(name)
+            if saved:
+                ingested = f" saved skills: {', '.join(saved)}"
+        if reran:
+            self.store.set_status(tid, "pending", result_path=result_path,
+                                  result_summary=(res_text[:500] + ingested))
+            self._note_outcome(None, now)
+            return f"task #{tid} saved, evidence re-run queued{ingested}"
         self.store.set_status(tid, "done", result_path=result_path,
-                              result_summary=res_text[:500])
+                              result_summary=(res_text[:500] + ingested))
         self._note_outcome(True, now)
-        return f"task #{tid} done"
+        return f"task #{tid} done{ingested}"
+
+    def _scout_evidence(self, task: dict, text: str) -> tuple[str, bool]:
+        """Banner outputs with too few sources; queue at most one re-run."""
+        need = int(self.config.revenue_value("min_sources_per_research"))
+        if len(ventures.find_urls(text)) >= need:
+            return text, False
+        key = f"evidence_rerun:{task['id']}"
+        if self.store.kv_get(key) is None:
+            self.store.set_status(
+                task["id"], "pending",
+                prompt=task["prompt"] + "\n\nYour last answer had too few sources. "
+                "Add verifiable URLs or say clearly what could not be verified.",
+                result_summary=f"evidence re-run queued ({need} sources needed)")
+            self.store.kv_set(key, "1")
+        return f"> UNVERIFIED: fewer than {need} sources\n{text}", True
 
     # ---------- tick ----------
     def tick(self) -> str:
@@ -406,6 +641,13 @@ class Orchestrator:
             filed = [f"{k}={v}" for k, v in counts.items() if v]
             events.append("review:" + (",".join(filed) if filed else "none"))
 
+            adv = ventures.auto_advance(self.store, self.root)
+            if adv:
+                events.append("ventures:" + ",".join(adv))
+            poll_ev = self._maybe_poll(now)
+            if poll_ev:
+                events.append(poll_ev)
+
             jobs = self._run_jobs(now, paused, survival)
             events.extend(jobs)
 
@@ -416,6 +658,9 @@ class Orchestrator:
                               else "dispatch:none (paused)")
         else:
             events.append("night: watchdog only")
+            poll_ev = self._maybe_poll(now)
+            if poll_ev:
+                events.append(poll_ev)
 
         try:
             maybe_send_digest(self.store, root=self.root)
@@ -430,7 +675,8 @@ class Orchestrator:
                 "treasurer", "Daily cash report",
                 "Write today's opening cash report from the ledger: balances, "
                 "daily burn rate, runway in days, pending approvals, unusual spending. "
-                "Read every number from the ledger, never estimate."))
+                "Read every number from the ledger, never estimate. "
+                + metrics_line(self.root)))
             self._mark_job("morning_report", now)
         if self._job_due("morning_plan", "06:30", now):
             if paused or survival:
@@ -450,7 +696,8 @@ class Orchestrator:
             events.append(self._queue_helper_task(
                 "treasurer", "End-of-day cash close",
                 "Write the end-of-day cash report from the ledger: closing balances, "
-                "today's spend by bucket, pending approvals. Numbers from the ledger only."))
+                "today's spend by bucket, pending approvals. Numbers from the ledger only. "
+                + metrics_line(self.root)))
             self._mark_job("evening_close", now)
         if self._job_due("journal", "20:15", now):
             events.append(self._queue_helper_task(
@@ -467,13 +714,25 @@ class Orchestrator:
                 "chronicler", "Weekly retrospective",
                 "Write the weekly retrospective: what earned, what lost, which agent "
                 "was inefficient, which assumption was wrong. Turn methods that worked "
-                "into skill proposals."))
+                "into skill proposals. Output zero to three new skills, each as a "
+                "block starting with a line `SKILL: <kebab-name>` followed by the "
+                "markdown file content (with front matter: title, agents, tags)."))
             if paused or survival:
                 events.append("weekly brain skipped (paused/survival)")
             else:
                 msg, _ = self._brain_session("weekly_retro", now)
                 events.append(msg)
             self._mark_job("weekly_retro", now)
+        if self._job_due("metrics", "20:15", now, weekday=6):
+            path = metrics_mod.write_metrics(self.store, self.ledger, self.root, now)
+            headline = metrics_mod.metrics_headline(self.root, 5)
+            send_info(f"Weekly metrics ready ({path.name}):\n{headline}",
+                      self.store, root=self.root)
+            events.append(f"metrics written ({path.name})")
+            self._mark_job("metrics", now)
+        day90 = self._day90(now, paused or survival)
+        if day90:
+            events.append(day90)
         if self.store.kv_get("bootstrapped") is None:
             msg, ran = self._brain_session("bootstrap", now, BOOTSTRAP_PARAGRAPH)
             events.append("bootstrap: " + msg)

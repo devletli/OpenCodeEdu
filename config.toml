@@ -27,3 +27,11 @@ max_task_attempts = 3
 yellow_daily_auto_approve_cents = 1000
 min_free_disk_mb = 1024
 max_consecutive_failures = 5
+
+[revenue]
+payment_fee_percent = 5
+payment_fee_fixed_cents = 50
+venture_budget_cents = 1500
+max_active_ventures = 3
+poll_minutes = 15
+min_sources_per_research = 3

@@ -23,7 +23,12 @@ class FakeRunner:
         *,
         fail_agents: tuple[str, ...] = (),
         timeout_agents: tuple[str, ...] = (),
-        default: str = "fake run completed",
+        # The placeholder carries 3 distinct source URLs so dispatched scout
+        # tasks pass the research evidence check (§8) by default.
+        default: str = ("fake run completed\n\nSources:\n"
+                        "- https://example.com/research-a\n"
+                        "- https://example.com/research-b\n"
+                        "- https://example.com/research-c"),
         on_run: Callable[[str, str, Path], None] | None = None,
     ):
         self.outputs = {k: list(v) for k, v in (outputs or {}).items()}

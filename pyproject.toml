@@ -3,7 +3,7 @@ name = "kiraci"
 version = "0.1.0"
 description = "A multi-agent system that pays its own bills"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.2"]
+dependencies = ["mcp>=1.2,<2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff"]

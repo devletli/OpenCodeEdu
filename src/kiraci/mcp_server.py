@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
+from . import ventures
+from .config import REVENUE_DEFAULTS, load_config
 from .db import connect
 from .ledger import Ledger
 
@@ -26,10 +28,26 @@ def get_balances() -> dict:
 
 
 @mcp.tool()
-def request_spend(agent: str, bucket: str, amount_eur: float, purpose: str) -> dict:
+def request_spend(agent: str, bucket: str, amount_eur: float, purpose: str,
+                  venture_id: int | None = None) -> dict:
     """Request a spend. The decision is made by policy: approved / pending / rejected.
-    If pending, a human must approve it; you cannot approve it yourself."""
-    return _ledger.request_spend(agent, bucket, _cents(amount_eur), purpose)
+    If pending, a human must approve it; you cannot approve it yourself.
+    Spending from the experiment bucket requires a building/live venture id."""
+    amount_cents = _cents(amount_eur)
+    if bucket == "experiment":
+        if venture_id is None:
+            return {"status": "rejected",
+                    "reason": "experiment spending requires a venture_id"}
+        try:
+            budget = int(load_config().revenue_value("venture_budget_cents"))
+        except (OSError, ValueError):
+            budget = int(REVENUE_DEFAULTS["venture_budget_cents"])
+        gate = ventures.authorize_experiment_spend(
+            _ledger.conn, venture_id, amount_cents, budget)
+        if gate is not None:
+            return {"status": "rejected", "reason": gate}
+    return _ledger.request_spend(agent, bucket, amount_cents, purpose,
+                                 venture_id=venture_id)
 
 
 @mcp.tool()
