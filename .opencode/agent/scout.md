@@ -1,6 +1,6 @@
 ---
 description: Scout. Does web research and reports findings with sources.
-mode: subagent
+mode: all
 temperature: 0.4
 tools:
   write: false

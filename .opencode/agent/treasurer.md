@@ -1,6 +1,6 @@
 ---
 description: Treasurer. Tracks budget and ledger, produces the daily cash report.
-mode: subagent
+mode: all
 temperature: 0.1
 tools:
   write: false

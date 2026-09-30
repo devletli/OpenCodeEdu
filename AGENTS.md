@@ -44,7 +44,7 @@
 - Paid runs gate through `ledger.request_spend(tokens)` inside the runner — daily cap/survival bind automatically. `FakeRunner` lives in `src/kiraci/testing.py` (also used by `--dry-run`); tests never touch opencode/network/money.
 - Builder flow: `workspace/task-<id>` worktree → commit → `guard.py` diff check → judge ACCEPT/REJECT → merge under lock. `tools/` output is never auto-executed.
 - Human inbox: agents may only request logins/account actions via `request_human_action` (≤3/day, secrets rejected by regex); orchestrator red approvals use dedupe `approval:<id>`. Secrets live in `.env` only (git-ignored).
-- opencode 1.18.31 verified here: `opencode run --agent <name> --model provider/model "<prompt>"`. `mode: subagent` selectability could not be verified under the no-questions contract — modes kept as-is; see `DECISIONS.md`.
+- opencode 1.18.31 verified here: `opencode run --agent <name> --model provider/model "<prompt>"`. Task agents are `mode: all` (subagent files are NOT selectable headlessly — verified); brain stays `primary`. See `DECISIONS.md`.
 
 ## Revenue rules (v0.3)
 

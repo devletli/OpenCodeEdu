@@ -38,3 +38,9 @@ One bullet per decision: what, why. Autonomy contract: no questions asked.
 - **Day-90 notice goes through `send_info`** (Telegram if configured + one dated inbox line), not a human task; the system never stops itself.
 - **Treasurer/brain prompts reference the latest metrics file** via a one-line pointer, and weekly retro task prompts carry the SKILL-block instruction; ingestion runs only for the exact-titled "Weekly retrospective" task.
 - **Skipped-budget convention reused:** budget-skipped scout/builder runs defer the same way in v0.3; evidence re-runs reuse `set_status` with an extended field allowlist (`prompt`, `title` added to `Store.set_status`).
+- **Agent modes resolved empirically (post-v0.3):** `opencode run --agent scout`
+  on a `mode: subagent` file prints `agent "scout" not found. Falling back to
+  default agent` — subagents are NOT selectable headlessly. Per the TASK 2
+  Step-0 fallback, all 7 task agents are now `mode: all` (verified: `> scout`
+  selected, no fallback). `brain` stays `mode: primary`, also verified
+  selectable. The same ping test confirmed `openrouter/z-ai/glm-4.7-flash` runs.

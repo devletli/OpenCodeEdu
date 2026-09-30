@@ -1,6 +1,6 @@
 ---
 description: Builder. Writes product, tool and automation code. Works only inside the worktree it is given.
-mode: subagent
+mode: all
 temperature: 0.2
 tools:
   write: true

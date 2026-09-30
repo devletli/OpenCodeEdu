@@ -1,6 +1,6 @@
 ---
 description: Diplomat. Drafts messages for the social circle and community interaction.
-mode: subagent
+mode: all
 temperature: 0.7
 tools:
   write: false

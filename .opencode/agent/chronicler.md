@@ -1,6 +1,6 @@
 ---
 description: Chronicler. Writes the daily journal and weekly retrospective.
-mode: subagent
+mode: all
 temperature: 0.5
 tools:
   write: false

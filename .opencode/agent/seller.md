@@ -1,6 +1,6 @@
 ---
 description: Seller. Drafts product pages, descriptions and announcements. Does not publish.
-mode: subagent
+mode: all
 temperature: 0.7
 tools:
   write: false
