@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ledger": {
+      "type": "local",
+      "command": ["python", "-m", "kiraci.mcp_server"],
+      "enabled": true,
+      "environment": { "KIRACI_DB": "/opt/kiraci/data/kiraci.db" }
+    }
+  },
+  "tools": { "ledger_*": false }
+}
