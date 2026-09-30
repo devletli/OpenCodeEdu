@@ -341,3 +341,26 @@ all logs in SQLite.
 - [ ] Is a 20% profit share appropriate?
 - [ ] Which day/time is the weekly mentor meeting?
 - [ ] Trial period: what is the continue/shut-down criterion at day 90?
+
+---
+
+## 15. Human Interaction Protocol and Real-Money Reality (added in v0.2)
+
+1. **The human is contacted only through the Human Inbox**, and only for: logins, account
+   setup (including bank, payment-provider or storefront accounts, which are always opened
+   by the human in their own name), identity verification, payment-method setup, secret
+   provisioning, and red-tier approvals. Everything else the system decides itself.
+2. **Requests never block the system.** Work that depends on a human task is marked
+   blocked; everything else continues.
+3. **Secrets never travel through agents, the inbox, notes or logs.** The human puts them
+   into the `.env` file or into the provider's own dashboard. Agents never see card
+   numbers, bank credentials or private keys.
+4. **The ledger is the control plane, not the bank.** It records and limits spending, but
+   real money only leaves through accounts and credits the human has set up. Prefer
+   prepaid provider credits, provider-side spending limits and a limited virtual card so
+   the EUR 100 is a hard cap outside the software as well.
+5. **Crypto:** trading of any asset stays forbidden (Section 5). A crypto account may only
+   ever be considered as a way to RECEIVE payments, and only the human opens and controls it.
+6. **Agents cannot modify** `src/`, `tests/`, `.opencode/`, `deploy/`, `KIRACI.md`,
+   `opencode.json`, `config.toml` or `data/`. The orchestrator enforces this on every
+   builder diff (`guard.py`); the prompt is not the only barrier.
