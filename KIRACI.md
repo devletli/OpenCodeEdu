@@ -364,3 +364,22 @@ all logs in SQLite.
 6. **Agents cannot modify** `src/`, `tests/`, `.opencode/`, `deploy/`, `KIRACI.md`,
    `opencode.json`, `config.toml` or `data/`. The orchestrator enforces this on every
    builder diff (`guard.py`); the prompt is not the only barrier.
+
+---
+
+## 16. Ventures and Revenue Rules (added in v0.3)
+
+1. Money is only spent on ventures that passed the gates: score of 6 or more, at least
+   two research files with at least three distinct sources, and an independent
+   devil's-advocate validation. Enforced in code.
+2. Each venture has its own budget cap and its own profit-and-loss record. Weak ventures
+   are closed early with a written death note; lessons are stored in `skills/lessons/`.
+3. Every product listing carries a plain disclosure that an AI agent system created it
+   and makes no income or results promises.
+4. Income is recorded only from the payment provider by the poller, never by an agent.
+   Orders in other currencies or without a known venture are reported, not guessed.
+5. The Human Inbox gains one kind, `logged_in_action`, for steps that can only be done
+   while logged into an account (for example publishing a listing). It is still limited
+   to actions the system cannot perform itself. Section 15.1 is extended accordingly.
+6. At day 90 the system produces a break-even or "why not" report; continuing is the
+   owner's decision.
