@@ -112,3 +112,22 @@ def test_missing_model_skips_without_spending(wired, monkeypatch):
     assert not res.ok and "no model" in res.skipped_reason
     assert calls == []
     assert wired["ledger"].balances()["tokens"] == 3000
+
+
+def test_missing_binary_fails_run_instead_of_raising(wired):
+    # Regression: on Windows `opencode` can be an unrunnable shim; Popen then
+    # raises FileNotFoundError, which must fail the run, not kill the daemon.
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"],
+                            cmd_builder=lambda a, m, p: ["no-such-binary-xyz"])
+    res = runner.run("scout", "hi", ".", 30)
+    assert not res.ok and "failed to start" in res.text
+    row = wired["store"].conn.execute(
+        "SELECT status FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "error"
+
+
+def test_resolve_opencode_binary():
+    from kiraci.runner import resolve_opencode_binary
+
+    assert resolve_opencode_binary()  # non-empty string, never raises

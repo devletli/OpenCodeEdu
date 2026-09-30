@@ -9,8 +9,10 @@ it in DECISIONS.md.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,7 +43,35 @@ class Runner(Protocol):
 
 
 def default_command(agent: str, model: str, prompt: str) -> list[str]:
-    return ["opencode", "run", "--agent", agent, "--model", model, prompt]
+    return [resolve_opencode_binary(), "run", "--agent", agent, "--model",
+            model, prompt]
+
+
+def resolve_opencode_binary() -> str:
+    """Locate a directly-executable opencode binary.
+
+    On Windows `opencode` on PATH is usually an npm/nvm shim (.cmd/.ps1 or an
+    extensionless shell stub) that CreateProcess cannot execute directly
+    (FileNotFoundError). In that case look for the real binary next to the
+    shim (npm layout: node_modules/opencode-ai/bin/opencode.exe).
+    Resolved once at runner construction, while the parent env (full PATH)
+    is still intact.
+    """
+    found = shutil.which("opencode")
+    if found and found.lower().endswith(".exe"):
+        return found
+    if found:
+        sibling = (Path(found).parent / "node_modules" / "opencode-ai"
+                   / "bin" / "opencode.exe")
+        if sibling.is_file():
+            return str(sibling)
+        same_dir = Path(found).parent / "opencode.exe"
+        if same_dir.is_file():
+            return str(same_dir)
+    if found:
+        return found
+    print("kiraci: opencode not found on PATH", file=sys.stderr)
+    return "opencode"
 
 
 class OpencodeRunner:
@@ -91,19 +121,27 @@ class OpencodeRunner:
                 )
         cmd = self.cmd_builder(agent, model, prompt)
         start = time.monotonic()
-        if os.name == "posix":
-            proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=str(cwd), env=self._child_env(),
-                text=True, start_new_session=True,
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=str(cwd), env=self._child_env(),
-                text=True,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
+        try:
+            if os.name == "posix":
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, cwd=str(cwd), env=self._child_env(),
+                    text=True, start_new_session=True,
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, cwd=str(cwd), env=self._child_env(),
+                    text=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+        except OSError as e:
+            # A missing/broken binary must fail the run, never kill the daemon:
+            # the task goes through the normal attempts/consec-failure path.
+            self.store.log_run(agent=agent, model=model, est_cost_cents=cost,
+                               duration_s=0.0, exit_code=None, status="error")
+            return RunResult(ok=False, text=f"failed to start {cmd[0]!r}: {e}",
+                             exit_code=None, duration_s=time.monotonic() - start)
         try:
             out, _ = proc.communicate(timeout=timeout_s)
             status = "ok" if proc.returncode == 0 else "failed"

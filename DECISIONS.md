@@ -44,3 +44,19 @@ One bullet per decision: what, why. Autonomy contract: no questions asked.
   Step-0 fallback, all 7 task agents are now `mode: all` (verified: `> scout`
   selected, no fallback). `brain` stays `mode: primary`, also verified
   selectable. The same ping test confirmed `openrouter/z-ai/glm-4.7-flash` runs.
+- **Windows shim crash fixed:** `opencode` on PATH here is an npm/nvm shim
+  (.cmd/.ps1/shell stub) that CreateProcess cannot execute, so the first real
+  tick died with FileNotFoundError inside Popen. `resolve_opencode_binary()`
+  now finds the real `node_modules/opencode-ai/bin/opencode.exe` next to the
+  shim (verified locally), and any remaining spawn OSError fails the run
+  (status `error`, normal attempts path) instead of killing the daemon. The
+  crashed tick had already passed the 5c spend gate, so the ledger holds an
+  audited `run brain` expense with no matching run row — accepted as-is.
+- **Model picks from OpenRouter weekly-usage + price tables:** output price
+  dominates agent cost (5.3-flash $0.2475 vs 5.3 $4.00, 16x). STRONG =
+  `openrouter/z-ai/glm-5` (~3.4c per brain session, newest flagship reasoning;
+  4.7 at ~2.5c was the runner-up). MID/CHEAP = `openrouter/z-ai/glm-5.3-flash`
+  ($0.02/$0.2475, #3 by weekly usage at 12.3T tokens). Fallbacks if prices
+  move: DeepSeek V4 Flash 0731 ($0.0099/$0.1307) for cheap tiers; free
+  Space-Bunny/Nemotron rows rejected (unknown provenance/rate limits — wrong
+  for the money pipeline).
