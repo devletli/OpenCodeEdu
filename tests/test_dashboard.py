@@ -53,7 +53,7 @@ def test_binds_loopback_only(tmp_path):
 def test_get_pages_render(server):
     url, _ = server
     for path in ("/", "/ledger", "/tasks", "/research", "/agents"):
-        code, headers, body = get(url + path)
+        code, _headers, body = get(url + path)
         assert code == 200, path
         assert "kiraci" in body
 
