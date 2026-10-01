@@ -88,7 +88,8 @@ class DashboardState:
                 "SELECT id, kind, title, status FROM human_tasks"
                 " WHERE status='open' ORDER BY id")]
             return {"kv": kv, "balances": balances, "runs": runs,
-                    "ventures": ventures, "payments": payments, "human": human}
+                    "ventures": ventures, "payments": payments, "human": human,
+                    "spend": self.spend_breakdown()}
         finally:
             conn.close()
 
@@ -122,6 +123,47 @@ class DashboardState:
                 out.append((p.name, text))
         return out
 
+    def spend_breakdown(self) -> dict:
+        """Where the money went: expenses grouped by bucket and by agent."""
+        conn = self.conn()
+        try:
+            by_bucket = [dict(r) for r in conn.execute(
+                "SELECT bucket, SUM(-delta_cents) s, COUNT(*) n FROM ledger"
+                " WHERE kind='expense' GROUP BY bucket ORDER BY s DESC")]
+            by_agent = [dict(r) for r in conn.execute(
+                "SELECT agent, SUM(-delta_cents) s, COUNT(*) n FROM ledger"
+                " WHERE kind='expense' GROUP BY agent ORDER BY s DESC")]
+            return {"by_bucket": by_bucket, "by_agent": by_agent}
+        finally:
+            conn.close()
+
+    def agent_activity(self) -> list[dict]:
+        """Every agent: total spend, recent runs, tasks and their outcomes."""
+        conn = self.conn()
+        try:
+            agents = [r["agent"] for r in conn.execute(
+                "SELECT agent, COALESCE(SUM(-delta_cents),0) s FROM ("
+                "SELECT agent, delta_cents FROM ledger UNION ALL"
+                " SELECT agent, 0 FROM tasks UNION ALL"
+                " SELECT agent, 0 FROM runs) GROUP BY agent ORDER BY s DESC")]
+            out = []
+            for a in agents:
+                spend = int(conn.execute(
+                    "SELECT COALESCE(SUM(-delta_cents),0) s FROM ledger"
+                    " WHERE kind='expense' AND agent=?", (a,)).fetchone()["s"])
+                runs = [dict(r) for r in conn.execute(
+                    "SELECT id, ts, est_cost_cents, duration_s, exit_code,"
+                    " status FROM runs WHERE agent=? ORDER BY id DESC LIMIT 10",
+                    (a,))]
+                tasks = [dict(r) for r in conn.execute(
+                    "SELECT id, title, status, attempts, result_summary"
+                    " FROM tasks WHERE agent=? ORDER BY id DESC LIMIT 20", (a,))]
+                out.append({"agent": a, "spend_cents": spend,
+                            "runs": runs, "tasks": tasks})
+            return out
+        finally:
+            conn.close()
+
 
 def _table(headers: list[str], rows: list[list[str]]) -> str:
     head = "".join(f"<th>{h}</th>" for h in headers)
@@ -151,6 +193,13 @@ def render_overview(data: dict) -> str:
         ["Last verify", esc(kv.get("last_verify", "never"))],
     ]
     out = ["<h1>Kiraci overview</h1>", _table(["", "value"], rows),
+           "<h2>Where the money went</h2>",
+           _table(["bucket", "spent (EUR)", "entries"],
+                  [[esc(r["bucket"]), esc(r["s"] / 100), esc(r["n"])]
+                   for r in data["spend"]["by_bucket"]]),
+           _table(["agent", "spent (EUR)", "entries"],
+                  [[esc(r["agent"]), esc(r["s"] / 100), esc(r["n"])]
+                   for r in data["spend"]["by_agent"]]),
            "<h2>Open human tasks</h2>",
            _table(["id", "kind", "title"],
                   [[esc(t["id"]), esc(t["kind"]), esc(t["title"])]
@@ -170,13 +219,36 @@ def render_overview(data: dict) -> str:
     return "\n".join(out)
 
 
+def render_agents(data: list[dict]) -> str:
+    out = ["<h1>Agents - what they did</h1>"]
+    for a in data:
+        out.append(f"<h2>{esc(a['agent'])} "
+                   f"(spent {esc(a['spend_cents'] / 100):.2f} EUR)</h2>")
+        out.append("<h3>Runs</h3>")
+        out.append(_table(
+            ["id", "ts", "est cost (c)", "duration (s)", "exit", "status"],
+            [[esc(r["id"]), esc(r["ts"]), esc(r["est_cost_cents"]),
+              esc(round(r["duration_s"], 1)), esc(r["exit_code"]), esc(r["status"])]
+             for r in a["runs"]]))
+        out.append("<h3>Tasks</h3>")
+        out.append(_table(
+            ["id", "title", "status", "attempts", "result"],
+            [[esc(t["id"]), esc(t["title"]), esc(t["status"]),
+              esc(t["attempts"]), esc((t["result_summary"] or "")[:200])]
+             for t in a["tasks"]]))
+    return "\n".join(out)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     state: DashboardState
 
     def _page(self, body: str, code: int = 200) -> None:
+        nav = ("<p><a href='/'>overview</a> | <a href='/agents'>agents</a> | "
+               "<a href='/ledger'>ledger</a> | <a href='/tasks'>tasks</a> | "
+               "<a href='/research'>research</a></p>")
         doc = (f"<!doctype html><html><head><meta charset='utf-8'>"
                f"<title>kiraci</title><style>{STYLE}</style></head>"
-               f"<body>{body}</body></html>")
+               f"<body>{nav}{body}</body></html>")
         raw = doc.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -193,6 +265,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path = self.path.split("?", 1)[0]
             if path == "/":
                 self._page(render_overview(self.state.overview()))
+            elif path == "/agents":
+                self._page(render_agents(self.state.agent_activity()))
             elif path == "/ledger":
                 rows = self.state.ledger_rows()
                 self._page(

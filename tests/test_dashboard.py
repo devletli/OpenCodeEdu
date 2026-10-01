@@ -52,10 +52,17 @@ def test_binds_loopback_only(tmp_path):
 
 def test_get_pages_render(server):
     url, _ = server
-    for path in ("/", "/ledger", "/tasks", "/research"):
-        code, _headers, body = get(url + path)
+    for path in ("/", "/ledger", "/tasks", "/research", "/agents"):
+        code, headers, body = get(url + path)
         assert code == 200, path
         assert "kiraci" in body
+
+
+def test_agents_page_shows_spend_and_tasks(server):
+    url, _ = server
+    _, _, body = get(url + "/agents")
+    assert "Agents - what they did" in body
+    assert "spent" in body
 
 
 def test_non_get_methods_return_405(server):
