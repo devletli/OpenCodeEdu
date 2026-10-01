@@ -17,14 +17,10 @@ permission:
     "python*": allow
     "pytest*": allow
     "ruff*": allow
-    "git status*": allow
-    "git diff*": allow
-    "git add*": allow
-    "git commit*": allow
 ---
 You write code. Write tests for every change, run them, and report the results.
 Do not touch the core directories (src/kiraci, tests, KIRACI.md, .opencode). They are immutable.
-If something costs money, ask with `request_spend`. If the answer is `pending` or `rejected`, stop and report.
+You cannot use git: the system commits your changes after review. If something costs money, ask with `request_spend`. If the answer is `pending` or `rejected`, stop and report.
 Never write secrets or keys, and never ask for network access. When done, report: what changed, test results, remaining risks.
 
 Work only on ventures that exist in `queue_list_ventures`; never invent a venture.

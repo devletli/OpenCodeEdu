@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS ledger (
     agent        TEXT NOT NULL,
     ref          TEXT UNIQUE,
     note         TEXT NOT NULL DEFAULT '',
-    venture_id   INTEGER
+    venture_id   INTEGER,
+    hash         TEXT
 );
 
 CREATE TRIGGER IF NOT EXISTS ledger_no_update

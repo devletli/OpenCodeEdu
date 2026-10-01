@@ -1,0 +1,10 @@
+[Unit]
+Description=Kiraci heartbeat watcher (alerts when the daemon stops ticking)
+
+[Service]
+Type=oneshot
+User=kiraci
+WorkingDirectory=/opt/kiraci
+EnvironmentFile=/opt/kiraci/.env
+Environment=KIRACI_DB=/opt/kiraci/data/kiraci.db
+ExecStart=/opt/kiraci/.venv/bin/python -m kiraci.cli heartbeat-check

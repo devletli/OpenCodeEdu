@@ -1,28 +1,32 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import signal
 import sqlite3
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import builder_flow, product_check, ventures
+from . import builder_flow, product_check, usage, ventures
 from . import metrics as metrics_mod
 from . import payments as payments_mod
+from . import sandbox as sandbox_mod
 from . import skills as skills_mod
+from .backup import run_backup
 from .config import load_config
 from .db import connect
 from .ledger import Ledger
+from .logsetup import get_logger
 from .notify import maybe_send_digest, notify_human, send_info
 from .review import review_approvals
 from .store import ORCHESTRATOR, Store, utcnow_iso
 from .testing import FakeRunner
+from .verify import verify_ledger
 
 SURVIVAL_TOTAL_CENTS = 1000
 
@@ -155,14 +159,17 @@ def build_status(store: Store, ledger: Ledger, now: datetime) -> str:
 
 
 class Orchestrator:
-    def __init__(self, *, root, store, ledger, config, runner, clock=None):
+    def __init__(self, *, root, store, ledger, config, runner, clock=None,
+                 sandbox=None):
         self.root = Path(root)
         self.store = store
         self.ledger = ledger
         self.config = config
         self.runner = runner
+        self.sandbox = sandbox
         self.clock = clock or (lambda: datetime.now(UTC))
         self.stopped = False
+        self.log = get_logger(self.root)
 
     def now(self) -> datetime:
         now = self.clock()
@@ -197,7 +204,7 @@ class Orchestrator:
                 try:
                     notify_human(result["task"], root=self.root, store=self.store)
                 except (OSError, sqlite3.Error) as e:
-                    print(f"kiraci: startup notify failed: {e}", file=sys.stderr)
+                    self.log.warning("startup notify failed: %s", e)
 
     # ---------- jobs ----------
     def _job_due(self, name: str, hhmm: str, now: datetime, weekday: int | None = None) -> bool:
@@ -212,6 +219,23 @@ class Orchestrator:
 
     def _mark_job(self, name: str, now: datetime) -> None:
         self.store.kv_set(f"job:{name}:{now.strftime('%Y-%m-%d')}", "1")
+
+    def _job_due_exact(self, name: str, hhmm: str, now: datetime) -> bool:
+        """For reconcile_times_utc entries: due once per day after the time."""
+        day = now.strftime("%Y-%m-%d")
+        if self.store.kv_get(f"job:{name}:{day}"):
+            return False
+        hh, mm = int(hhmm[:2]), int(hhmm[3:])
+        return now.replace(hour=hh, minute=mm, second=0,
+                           microsecond=0) <= now
+
+    def _notify_verify_findings(self, findings: list[str]) -> None:
+        (self.root / "data").mkdir(parents=True, exist_ok=True)
+        (self.root / "data" / "PAUSE").touch()
+        self.log.error("ledger verify findings: %s", "; ".join(findings[:10]))
+        send_info("Ledger verification FAILED; the system paused itself. "
+                  "Findings: " + "; ".join(findings[:10]),
+                  self.store, root=self.root)
 
     def _queue_helper_task(self, agent: str, title: str, prompt: str) -> str:
         r = self.store.create_task(agent=agent, title=title, prompt=prompt,
@@ -239,10 +263,10 @@ class Orchestrator:
             f"Status:\n{status_text}\n\n{metrics_line(self.root)}\n\n"
             f"Recent finished tasks:\n{fin_lines}\n\n"
             f"Open human tasks:\n{human_lines}\n\n"
-            "Create at most 5 new tasks with `queue_create_task` (always pass "
-            "caller=\"brain\"). Score ideas per KIRACI.md Section 5, reject below 6, "
-            "prefer cheap reversible experiments, demand evidence. Titles of tasks "
-            "that directly aim at revenue start with \"[revenue]\".\n"
+            "Create at most 5 new tasks with `queue_create_task`. Score ideas per "
+            "KIRACI.md Section 5, reject below 6, prefer cheap reversible "
+            "experiments, demand evidence. Titles of tasks that directly aim at "
+            "revenue start with \"[revenue]\".\n"
             f"{extra}\n"
             f"{self._wind_down_instruction(now)}"
             "Your final answer is a short summary: decisions taken, tasks created, and why."
@@ -316,7 +340,7 @@ class Orchestrator:
                     try:
                         notify_human(res["task"], root=self.root, store=self.store)
                     except (OSError, sqlite3.Error) as e:
-                        print(f"kiraci: handoff notify failed: {e}", file=sys.stderr)
+                        self.log.warning("handoff notify failed: %s", e)
                     events.append(f"handoff {slug}: publish task filed")
                 self.store.kv_set(f"publish_rounds:{slug}", "0")
                 continue
@@ -428,10 +452,12 @@ class Orchestrator:
 
     def _git_snapshot(self, now: datetime) -> str:
         def git(*args):
+            env = dict(os.environ)
+            env["GIT_CONFIG_NOSYSTEM"] = "1"
             return subprocess.run(
                 ["git", *args], cwd=str(self.root), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                check=False,
+                check=False, env=env,
             )
 
         git("add", "research", "journal", "people", "skills")
@@ -446,15 +472,54 @@ class Orchestrator:
         return "snapshot commit failed"
 
     # ---------- dispatch ----------
+    def _sandbox_gate(self, now: datetime) -> str:
+        """ok | blocked (required mode, sandbox unavailable) | override.
+
+        mode `required` with a not-ok sandbox dispatches nothing real and
+        writes a system notice (inbox line + info Telegram, NOT a human task)
+        once per day. The unsandboxed override (KIRACI_SANDBOX=off AND
+        KIRACI_ALLOW_UNSANDBOXED=1) only ever lets no-bash/no-write agents run.
+        """
+        if self.sandbox is None:  # FakeRunner/dry-run: nothing real is executed
+            return "ok"
+        st = self.sandbox.status()
+        if st == "ok":
+            return "ok"
+        if (os.environ.get("KIRACI_SANDBOX") == "off"
+                and os.environ.get("KIRACI_ALLOW_UNSANDBOXED") == "1"):
+            return "override"
+        day = now.strftime("%Y-%m-%d")
+        if self.store.kv_get("sandbox_notice_day") != day:
+            self.store.kv_set("sandbox_notice_day", day)
+            detail = ("the sandbox is not usable on this host"
+                      if st == "unavailable" else "the sandbox is disabled")
+            send_info(
+                "No agent runs dispatched: sandbox mode is 'required' but "
+                f"{detail}. Install bubblewrap and enable unprivileged user "
+                "namespaces (see deploy/README.md), or set KIRACI_SANDBOX=off "
+                "with KIRACI_ALLOW_UNSANDBOXED=1 to run read-only agents "
+                "unsandboxed.", self.store, root=self.root)
+            self.log.warning("dispatch blocked: sandbox status=%s", st)
+        return "blocked"
+
     def _dispatch(self, now: datetime, survival: bool) -> str:
+        gate = self._sandbox_gate(now)
+        if gate == "blocked":
+            return "dispatch:none (sandbox unavailable)"
         cands = self.store.pending_tasks(utcnow_iso())
         for t in cands:
             if t["priority"] != 0 and not window_open(t["agent"], now):
+                continue
+            if gate == "override" and (
+                    self.sandbox is None
+                    or not self.sandbox.unsandboxed_agent_allowed(t["agent"])):
                 continue
             if survival and (
                 self.config.cost_for(t["agent"]) > 0
                 or not (t["title"].startswith("[revenue]") or t["agent"] == "treasurer")
             ):
+                continue
+            if usage.paid_paused(self.store, now) and self.config.cost_for(t["agent"]) > 0:
                 continue
             if self.config.model_for(t["agent"]) is None:
                 continue
@@ -536,7 +601,8 @@ class Orchestrator:
                                          task["title"], prompt)
         if sel:
             prompt = prompt + "\n\n## Relevant skills from past work\n" + sel
-        res = self.runner.run(task["agent"], prompt, self.root, timeout)
+        res = self.runner.run(task["agent"], prompt, self.root, timeout,
+                              task_id=tid)
         if res.skipped_reason is not None:
             self.store.set_status(tid, "pending", not_before=tomorrow_0005(now),
                                   result_summary=f"skipped: {res.skipped_reason}")
@@ -605,9 +671,17 @@ class Orchestrator:
         if (self.root / "data" / "KILL").exists():
             self.stopped = True
             return f"{iso} killed"
-        if (self.root / "data" / "PAUSE").exists():
-            return f"{iso} paused"
         events: list[str] = []
+        if (self.root / "data" / "PAUSE").exists():
+            # Paused blocks all LLM work, but the deterministic no-LLM jobs
+            # (reconcile, verify, backup) keep running around the clock.
+            events.append("paused")
+            events.extend(self._always_jobs(now))
+            try:
+                maybe_send_digest(self.store, root=self.root)
+            except (OSError, sqlite3.Error, ValueError) as e:
+                self.log.warning("digest failed: %s", e)
+            return f"{iso} phase={current_phase(now)} " + " ".join(events)
         survival = self.ledger.total_balance() < SURVIVAL_TOTAL_CENTS
         if survival:
             events.append("SURVIVAL")
@@ -662,11 +736,80 @@ class Orchestrator:
             if poll_ev:
                 events.append(poll_ev)
 
+        events.extend(self._always_jobs(now))
         try:
             maybe_send_digest(self.store, root=self.root)
         except (OSError, sqlite3.Error, ValueError) as e:
-            print(f"kiraci: digest failed: {e}", file=sys.stderr)
+            self.log.warning("digest failed: %s", e)
         return f"{iso} phase={current_phase(now)} " + " ".join(events)
+
+    def _always_jobs(self, now: datetime) -> list[str]:
+        """Deterministic, no-LLM jobs that run around the clock (even paused):
+        cost-truth reconcile, daily ledger verify, daily backup."""
+        events: list[str] = []
+        events.extend(self._cost_truth_jobs(now))
+        if self._job_due("verify", "22:00", now):
+            events.append(self._verify_job(now))
+            self._mark_job("verify", now)
+        backup_time = str(self.config.backup_value("time_utc"))
+        if self._job_due("backup", backup_time, now):
+            events.append(self._backup_job(now))
+            self._mark_job("backup", now)
+        return events
+
+    def _cost_truth_jobs(self, now: datetime) -> list[str]:
+        """Reconcile at [cost_truth].reconcile_times_utc; hard stop check throttled."""
+        events: list[str] = []
+        times = self.config.cost_truth_value("reconcile_times_utc") or []
+        for hhmm in times:
+            if self._job_due_exact(f"reconcile:{hhmm}", str(hhmm), now):
+                probe = usage.get_probe(self.config)
+                res = usage.reconcile(self.store, self.ledger, self.config,
+                                      probe, now)
+                self.store.kv_set("last_reconcile", now.isoformat())
+                self._mark_job(f"reconcile:{hhmm}", now)
+                if res.get("status") == "no-probe":
+                    events.append("reconcile: no probe (env-usage-probe task filed)")
+                elif res.get("status") == "probe-unreadable":
+                    events.append("reconcile: probe unreadable")
+                else:
+                    events.append(
+                        f"reconcile: actual={res.get('actual')} "
+                        f"booked={res.get('booked')} delta={res.get('delta')}")
+        last_check = self.store.kv_get("hardstop_checked_ts")
+        try:
+            checked = datetime.fromisoformat(last_check) if last_check else None
+        except ValueError:
+            checked = None
+        if checked is None or (now - checked).total_seconds() >= 1800:
+            self.store.kv_set("hardstop_checked_ts", now.isoformat())
+            probe = usage.get_probe(self.config)
+            stop = usage.check_hard_stop(self.store, self.config, probe, now)
+            if stop:
+                events.append(stop)
+        return events
+
+    def _verify_job(self, now: datetime) -> str:
+        findings = verify_ledger(self.ledger.conn)
+        self.store.kv_set("last_verify", json.dumps(
+            {"ts": now.isoformat(), "findings": findings}))
+        if findings:
+            self._notify_verify_findings(findings)
+            return f"verify: {len(findings)} findings, PAUSED"
+        return "verify: healthy"
+
+    def _backup_job(self, now: datetime) -> str:
+        res = run_backup(self.ledger.conn, self.root, self.config, now=now)
+        self.store.kv_set("last_backup", json.dumps(
+            {"ts": now.isoformat(), "path": res.get("path", ""),
+             "status": res.get("status")}))
+        if res.get("status") != "ok":
+            findings = res.get("findings", [])
+            self.log.error("backup failed: %s", "; ".join(findings)[:500])
+            send_info("Backup job failed: " + "; ".join(findings)[:500],
+                      self.store, root=self.root)
+            return f"backup: {res.get('status')}"
+        return f"backup: {res['path']}"
 
     def _run_jobs(self, now: datetime, paused: bool, survival: bool) -> list[str]:
         events: list[str] = []
@@ -752,7 +895,7 @@ class Orchestrator:
                 pass
         tick_s = int(self.config.limits.get("tick_seconds", 30))
         while not self.stopped:
-            print(self.tick(), flush=True)
+            self.log.info("%s", self.tick())
             if self.stopped:
                 break
             time.sleep(tick_s)
@@ -770,11 +913,16 @@ def build_orchestrator(*, dry_run: bool = False):
     ledger = Ledger(conn)
     config = load_config()
     if dry_run:
+        # No opencode, no spending, no sandbox: FakeRunner does nothing real.
         runner = FakeRunner(default="dry-run placeholder: no opencode, no spending")
+        orch = Orchestrator(root=root, store=store, ledger=ledger,
+                            config=config, runner=runner)
     else:
-        runner = OpencodeRunner(ledger=ledger, store=store, config=config)
-    orch = Orchestrator(root=root, store=store, ledger=ledger,
-                        config=config, runner=runner)
+        sbx = sandbox_mod.Sandbox(config=config, root=root)
+        runner = OpencodeRunner(ledger=ledger, store=store, config=config,
+                                sandbox=sbx, root=root)
+        orch = Orchestrator(root=root, store=store, ledger=ledger,
+                            config=config, runner=runner, sandbox=sbx)
     orch.startup()
     return orch
 

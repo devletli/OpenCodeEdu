@@ -1,65 +1,66 @@
+"""Agent-facing ledger MCP server: a thin IPC client.
+
+This server runs INSIDE the agent sandbox. It must never import or open the
+database; every call is forwarded through the broker, which binds it to the
+identity of the run (never to agent-supplied text) and enforces the per-agent
+tool allowlist. Human-only operations (approve, reject, record_income,
+init_genesis) have no broker handler and are unreachable by construction.
+"""
+
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from . import ventures
-from .config import REVENUE_DEFAULTS, load_config
-from .db import connect
-from .ledger import Ledger
+from .ipc import IpcError, call
 
-# Only safe, agent-facing tools are exposed here.
-# approve / reject / record_income / init_genesis are intentionally NOT available.
 mcp = FastMCP("kiraci-ledger")
-_ledger = Ledger(connect())
 
 
-def _cents(eur: float) -> int:
-    return round(eur * 100)
-
-
-def _eur(cents: int) -> float:
-    return cents / 100
+def _guard(fn):
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except IpcError as e:
+            return {"status": "error", "reason": str(e)}
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
 
 
 @mcp.tool()
+@_guard
 def get_balances() -> dict:
     """Return bucket balances in EUR (infra, tokens, experiment, emergency, owner)."""
-    return {k: _eur(v) for k, v in _ledger.balances().items()}
+    return call("ledger", "get_balances", {})
 
 
 @mcp.tool()
-def request_spend(agent: str, bucket: str, amount_eur: float, purpose: str,
-                  venture_id: int | None = None) -> dict:
+@_guard
+def request_spend(agent: str | None = None, bucket: str = "", amount_eur: float = 0.0,
+                  purpose: str = "", venture_id: int | None = None) -> dict:
     """Request a spend. The decision is made by policy: approved / pending / rejected.
     If pending, a human must approve it; you cannot approve it yourself.
-    Spending from the experiment bucket requires a building/live venture id."""
-    amount_cents = _cents(amount_eur)
-    if bucket == "experiment":
-        if venture_id is None:
-            return {"status": "rejected",
-                    "reason": "experiment spending requires a venture_id"}
-        try:
-            budget = int(load_config().revenue_value("venture_budget_cents"))
-        except (OSError, ValueError):
-            budget = int(REVENUE_DEFAULTS["venture_budget_cents"])
-        gate = ventures.authorize_experiment_spend(
-            _ledger.conn, venture_id, amount_cents, budget)
-        if gate is not None:
-            return {"status": "rejected", "reason": gate}
-    return _ledger.request_spend(agent, bucket, amount_cents, purpose,
-                                 venture_id=venture_id)
+    Spending from the experiment bucket requires a building/live venture id.
+    Note: identity is assigned by the system; any agent argument is ignored.
+    """
+    return call("ledger", "request_spend", {
+        "bucket": bucket, "amount_eur": amount_eur, "purpose": purpose,
+        "venture_id": venture_id,
+    })
 
 
 @mcp.tool()
+@_guard
 def list_pending() -> list[dict]:
     """List spend requests that are waiting for human approval."""
-    return _ledger.pending()
+    return call("ledger", "list_pending", {})
 
 
 @mcp.tool()
+@_guard
 def recent_entries(limit: int = 20) -> list[dict]:
     """Most recent ledger entries (amounts in cents, newest first)."""
-    return _ledger.recent(limit)
+    return call("ledger", "recent_entries", {"limit": limit})
 
 
 if __name__ == "__main__":

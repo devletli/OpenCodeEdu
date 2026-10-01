@@ -167,6 +167,26 @@ def find_secret(text: str) -> str | None:
     return None
 
 
+#: Patterns mirroring the v0.2 secret detector above (used for log redaction).
+_REDACT_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9_\-.~+/=]{8,}"),
+    re.compile(r"(?i)(?:password\s*:\s*\S+|passwd\s*=\s*\S+)"),
+    re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/=])"),
+    re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32,}(?![0-9a-fA-F])"),
+    re.compile(r"(?<!\d)\d{13,19}(?!\d)"),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask anything the secret detector would flag (for logs)."""
+    if not text:
+        return text
+    for rx in _REDACT_PATTERNS:
+        text = rx.sub("[REDACTED]", text)
+    return text
+
+
 class Store:
     """Typed access to the queue tables (tasks, human_tasks, runs, kv)."""
 
@@ -447,6 +467,23 @@ class Store:
             (agent, task_id, model, est_cost_cents, duration_s, exit_code, status),
         )
         return int(cur.lastrowid)
+
+    def start_run(self, *, agent: str, task_id: int | None = None,
+                  model: str = "", est_cost_cents: int = 0) -> int:
+        """Allocate the runs row first so the broker session can bind to run_id."""
+        cur = self.conn.execute(
+            "INSERT INTO runs(agent,task_id,model,est_cost_cents,status)"
+            " VALUES (?,?,?,?,'running')",
+            (agent, task_id, model, est_cost_cents),
+        )
+        return int(cur.lastrowid)
+
+    def finish_run(self, run_id: int, *, duration_s: float,
+                   exit_code: int | None, status: str) -> None:
+        self.conn.execute(
+            "UPDATE runs SET duration_s=?, exit_code=?, status=? WHERE id=?",
+            (duration_s, exit_code, status, run_id),
+        )
 
     # ---------- kv ----------
     def kv_get(self, key: str, default: str | None = None) -> str | None:

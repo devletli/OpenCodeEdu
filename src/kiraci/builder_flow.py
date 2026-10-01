@@ -22,9 +22,14 @@ _merge_lock = threading.Lock()
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    # The orchestrator is the only component that runs git commands that
+    # write: hooks and system config are always neutralized.
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     return subprocess.run(
         ["git", *args], cwd=str(cwd), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+        env=env,
     )
 
 
@@ -78,7 +83,8 @@ def run_builder_task(
     if add.returncode != 0:
         return fail(f"worktree add failed: {add.stdout.strip()[:500]}")
 
-    res = runner.run("builder", task["prompt"] + "\n\n" + BUILDER_RULES, wt, timeout)
+    res = runner.run("builder", task["prompt"] + "\n\n" + BUILDER_RULES, wt, timeout,
+                     task_id=task_id)
     if res.skipped_reason is not None:
         return defer(f"builder run skipped: {res.skipped_reason}")
     if not res.ok:
@@ -116,7 +122,7 @@ def run_builder_task(
         "Decide ACCEPT or REJECT per your policy. "
         "Your answer's first non-empty line must be exactly ACCEPT or REJECT."
     )
-    jres = runner.run("judge", judge_prompt, wt, timeout)
+    jres = runner.run("judge", judge_prompt, wt, timeout, task_id=task_id)
     if jres.skipped_reason is not None:
         return defer(f"judge run skipped: {jres.skipped_reason}")
     first = next((ln.strip() for ln in jres.text.splitlines() if ln.strip()), "")
@@ -129,6 +135,7 @@ def run_builder_task(
 
     with _merge_lock:
         merge = _git(["-c", "user.name=kiraci-bot", "-c", "user.email=bot@kiraci.local",
+                      "-c", f"core.hooksPath={os.devnull}",
                       "merge", "--no-ff", branch, "-m", f"merge task {task_id}"],
                      repo_root)
         if merge.returncode != 0:

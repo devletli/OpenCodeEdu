@@ -167,7 +167,7 @@ def test_key_never_in_stored_texts_or_agent_env(wired, tmp_path, monkeypatch):
     monkeypatch.setenv("LEMONSQUEEZY_API_KEY", "sk-live-SECRETKEY123")
     config = Config(models={"scout": "cheap"}, costs={}, limits={})
     runner = OpencodeRunner(ledger=ledger, store=store, config=config)
-    assert "LEMONSQUEEZY_API_KEY" not in runner._child_env()
+    assert "LEMONSQUEEZY_API_KEY" not in runner._child_env(None)
     poll(store, ledger, provider_name="testpay", api_key="sk-live-SECRETKEY123",
          fee_percent=5, fee_fixed=50, now=NOW,
          provider=FakeProvider([paid("o9")]))

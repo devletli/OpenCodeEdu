@@ -1,0 +1,20 @@
+[Unit]
+Description=Kiraci read-only dashboard (loopback only - use an SSH tunnel)
+After=kiraci.service
+
+[Service]
+Type=simple
+User=kiraci
+WorkingDirectory=/opt/kiraci
+Environment=KIRACI_DB=/opt/kiraci/data/kiraci.db
+ExecStart=/opt/kiraci/.venv/bin/python -c "from pathlib import Path; from kiraci.config import load_config; from kiraci.dashboard import serve; serve(Path('/opt/kiraci'), load_config())"
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/kiraci
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -38,7 +38,8 @@ class FakeRunner:
         self.on_run = on_run
         self.calls: list[dict] = []
 
-    def run(self, agent: str, prompt: str, cwd: Path, timeout_s: int) -> RunResult:
+    def run(self, agent: str, prompt: str, cwd: Path, timeout_s: int,
+            task_id: int | None = None) -> RunResult:
         self.calls.append({"agent": agent, "prompt": prompt, "cwd": cwd,
                            "timeout_s": timeout_s})
         if self.on_run is not None:

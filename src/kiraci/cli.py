@@ -2,16 +2,27 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import gzip
 import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import heartbeat as heartbeat_mod
 from . import ventures
+from .backup import run_backup
+from .config import load_config
 from .db import connect
 from .ledger import Ledger
 from .metrics import metrics_headline
 from .orchestrator import build_status, current_phase
+from .sandbox import Sandbox
 from .store import Store, find_secret
+from .verify import verify_ledger
 
 
 def cmd_status(ledger: Ledger, store: Store) -> dict:
@@ -20,6 +31,10 @@ def cmd_status(ledger: Ledger, store: Store) -> dict:
     attention = store.conn.execute(
         "SELECT provider, order_id, currency, gross_cents, status FROM payments"
         " WHERE status IN ('fx_unhandled','ignored') ORDER BY id").fetchall()
+    config = load_config()
+    root = Path.cwd()
+    sandbox = Sandbox(config=config, root=root)
+    hb_age = heartbeat_mod.heartbeat_age_minutes(store, now)
     return {
         "status_text": text,
         "balances_eur": {k: v / 100 for k, v in ledger.balances().items()},
@@ -30,8 +45,102 @@ def cmd_status(ledger: Ledger, store: Store) -> dict:
         "last_tick": store.kv_get("last_tick", "never"),
         "ventures": ventures.list_ventures(store.conn),
         "payments_needing_attention": [dict(r) for r in attention],
-        "metrics_headline": metrics_headline(Path.cwd()),
+        "metrics_headline": metrics_headline(root),
+        "sandbox_status": sandbox.status(),
+        "cost_multiplier": store.kv_get("cost_multiplier", "1.0"),
+        "paid_paused_until": store.kv_get("paid_paused_until"),
+        "last_reconcile": store.kv_get("last_reconcile"),
+        "last_backup": store.kv_get("last_backup"),
+        "last_verify": store.kv_get("last_verify"),
+        "heartbeat_age_minutes": (round(hb_age, 1) if hb_age is not None else None),
     }
+
+
+def _restore_ok_heartbeat(root: Path, db_path: Path) -> tuple[bool, str]:
+    """Refuse unless data/KILL exists and the last heartbeat is older than 2 min."""
+    if not (root / "data" / "KILL").exists():
+        return False, "restore requires data/KILL (stop the daemon first)"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT value FROM kv WHERE key='last_tick'").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return True, "no heartbeat recorded"
+    try:
+        last = datetime.fromisoformat(row["value"])
+    except ValueError:
+        return True, "heartbeat unparseable"
+    age = (datetime.now(UTC) - last).total_seconds()
+    if age <= 120:
+        return False, f"last heartbeat is only {age:.0f}s old; wait 2 minutes"
+    return True, f"heartbeat {age:.0f}s old"
+
+
+def _verify_backup_file(path: Path) -> list[str]:
+    """integrity_check + verify_ledger on a backup copy (plain or gzip)."""
+    try:
+        if path.suffix == ".gz":
+            with tempfile.TemporaryDirectory() as td:
+                plain = Path(td) / "verify.db"
+                with gzip.open(path, "rb") as f_in, open(plain, "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                conn = sqlite3.connect(plain)
+                conn.row_factory = sqlite3.Row
+                try:
+                    row = conn.execute("PRAGMA integrity_check").fetchone()
+                    findings = [] if (row and row[0] == "ok") else [
+                        "integrity_check failed"]
+                    return findings + verify_ledger(conn)
+                finally:
+                    conn.close()
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            findings = [] if (row and row[0] == "ok") else ["integrity_check failed"]
+            return findings + verify_ledger(conn)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.DatabaseError):
+        return ["backup file unreadable"]
+
+
+def cmd_restore(root: Path, backup_file: Path, yes: bool) -> dict:
+    """Human-only restore. Refuses unless KILL exists and heartbeat is stale."""
+    if not yes:
+        return {"status": "refused", "reason": "add --yes to actually restore"}
+    db_path = Path(os.path.abspath(os.environ.get("KIRACI_DB", "data/kiraci.db")))
+    if not db_path.exists():
+        return {"status": "refused", "reason": f"database not found: {db_path}"}
+    ok, why = _restore_ok_heartbeat(root, db_path)
+    if not ok:
+        return {"status": "refused", "reason": why}
+    findings = _verify_backup_file(backup_file)
+    if findings:
+        return {"status": "refused", "reason": "backup failed verification",
+                "findings": findings[:10]}
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    keep = db_path.with_name(f"{db_path.name}.before-restore-{stamp}")
+    shutil.move(str(db_path), str(keep))
+    for suffix in ("-wal", "-shm"):
+        Path(str(db_path) + suffix).unlink(missing_ok=True)
+    if backup_file.suffix == ".gz":
+        with gzip.open(backup_file, "rb") as f_in, open(db_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    else:
+        shutil.copyfile(backup_file, db_path)
+    conn = connect(str(db_path))
+    try:
+        version = conn.execute(
+            "SELECT value FROM kv WHERE key='schema_version'").fetchone()
+        findings = verify_ledger(conn)
+    finally:
+        conn.close()
+    return {"status": "restored", "kept_old_db": str(keep), "installed": str(db_path),
+            "schema_version": version["value"] if version else None,
+            "verify_findings": findings[:10]}
 
 
 def main() -> None:
@@ -86,13 +195,35 @@ def main() -> None:
     sub.add_parser("kill", help="stop the daemon after this tick")
     sub.add_parser("resume", help="clear KILL and PAUSE files")
     sub.add_parser("pause", help="pause dispatch")
+    sub.add_parser("verify", help="run the ledger integrity checks")
+    sub.add_parser("backup", help="run a backup now")
+    sub.add_parser("heartbeat-check", help="alert (once/hour) when the daemon is stale")
+    rs = sub.add_parser("restore", help="restore the database from a backup (human-only)")
+    rs.add_argument("file", help="backup file (.db or .db.gz)")
+    rs.add_argument("--yes", action="store_true", help="actually perform the restore")
     args = p.parse_args()
+
+    root = Path.cwd()
+    if args.cmd == "restore":
+        out = cmd_restore(root, Path(args.file), args.yes)
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        if out.get("status") != "restored":
+            sys.exit(1)
+        return
+    if args.cmd == "heartbeat-check":
+        conn = connect()
+        try:
+            code, msg = heartbeat_mod.heartbeat_check(
+                Store(conn), root, load_config())
+        finally:
+            conn.close()
+        print(msg)
+        sys.exit(code)
 
     conn = connect()
     ledger = Ledger(conn)
     store = Store(conn)
     who = getpass.getuser()
-    root = Path.cwd()
     if args.cmd == "init":
         ledger.init_genesis()
         out = ledger.balances()
@@ -164,6 +295,12 @@ def main() -> None:
         (root / "data" / "KILL").unlink(missing_ok=True)
         (root / "data" / "PAUSE").unlink(missing_ok=True)
         out = {"status": "ok", "detail": "KILL and PAUSE cleared"}
+    elif args.cmd == "verify":
+        findings = verify_ledger(conn)
+        out = {"status": "healthy" if not findings else "findings",
+               "findings": findings}
+    elif args.cmd == "backup":
+        out = run_backup(conn, root, load_config())
     else:
         (root / "data" / "PAUSE").touch()
         out = {"status": "ok", "detail": "PAUSE file created"}

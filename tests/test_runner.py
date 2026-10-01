@@ -47,8 +47,9 @@ def test_command_is_list_with_agent_and_model(wired):
     assert seen["cmd"][1] == "scout" and seen["cmd"][2] == "test/cheap"
 
 
-def test_env_allowlist_excludes_secrets(wired, monkeypatch):
+def test_env_allowlist_excludes_secrets_and_db(wired, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "super-secret")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
                             config=wired["config"],
                             cmd_builder=lambda a, m, p: _py(
@@ -57,7 +58,8 @@ def test_env_allowlist_excludes_secrets(wired, monkeypatch):
     assert res.ok
     child_env = json.loads(res.text.strip().splitlines()[-1])
     assert "TELEGRAM_BOT_TOKEN" not in child_env
-    assert os.path.isabs(child_env["KIRACI_DB"])
+    # v0.4: agents never see the database path
+    assert "KIRACI_DB" not in child_env
     assert os.path.isabs(runner.kiracidb)
 
 
@@ -73,7 +75,8 @@ def test_timeout_kills_process(wired):
     assert row["status"] == "timeout"
 
 
-def test_paid_run_calls_request_spend_first(wired):
+def test_paid_run_calls_request_spend_first(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     calls = []
 
     def never(agent, model, prompt):
@@ -89,13 +92,26 @@ def test_paid_run_calls_request_spend_first(wired):
     assert calls == []
 
 
-def test_paid_run_spends_on_success(wired):
+def test_paid_run_spends_on_success(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
                             config=wired["config"],
                             cmd_builder=lambda a, m, p: _py("pass"))
     res = runner.run("builder", "build it", ".", 60)
     assert res.ok
-    assert wired["ledger"].balances()["tokens"] == 3000 - 3
+    # no usage probe configured: the conservative 2.0x multiplier applies
+    assert wired["ledger"].balances()["tokens"] == 3000 - 6
+
+
+def test_paid_run_uses_kv_multiplier_with_probe(wired, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    wired["store"].kv_set("cost_multiplier", "2.0")
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"],
+                            cmd_builder=lambda a, m, p: _py("pass"))
+    res = runner.run("builder", "build it", ".", 60)
+    assert res.ok
+    assert wired["ledger"].balances()["tokens"] == 3000 - 6  # ceil(3*2.0)
 
 
 def test_missing_model_skips_without_spending(wired, monkeypatch):
@@ -131,3 +147,56 @@ def test_resolve_opencode_binary():
     from kiraci.runner import resolve_opencode_binary
 
     assert resolve_opencode_binary()  # non-empty string, never raises
+
+
+class _SandboxStub:
+    """Pretends the sandbox is unavailable: unsandboxed run with IPC wiring."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def status(self, *, force=False):
+        return "unavailable"
+
+    def ipc_dir(self, run_id):
+        d = self.root / "data" / "ipc" / run_id
+        (d / "requests").mkdir(parents=True, exist_ok=True)
+        (d / "responses").mkdir(parents=True, exist_ok=True)
+        return d
+
+    def sandbox_home(self, run_id):
+        d = self.root / "data" / "sandbox" / f"home-{run_id}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def cleanup(self, run_id):
+        import shutil
+        for rel in ("ipc", "sandbox"):
+            base = self.root / "data" / rel
+            shutil.rmtree(base / run_id, ignore_errors=True)
+            shutil.rmtree(base / f"home-{run_id}", ignore_errors=True)
+            try:
+                if base.is_dir() and not any(base.iterdir()):
+                    base.rmdir()
+            except OSError:
+                pass
+
+
+def test_run_wires_ipc_dir_and_cleans_up(wired, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_DB", str(tmp_path / "b.db"))
+    sbx = _SandboxStub(tmp_path)
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"],
+                            cmd_builder=lambda a, m, p: _py(
+                                "import os,json;print(json.dumps(dict(os.environ)))"),
+                            sandbox=sbx, root=tmp_path)
+    res = runner.run("scout", "hi", tmp_path, 60)
+    assert res.ok
+    child_env = json.loads(res.text.strip().splitlines()[-1])
+    assert "KIRACI_IPC_DIR" in child_env  # agents reach the broker, not the DB
+    assert "KIRACI_DB" not in child_env
+    assert not (tmp_path / "data" / "ipc").exists()  # cleaned up after the run
+    row = wired["store"].conn.execute(
+        "SELECT status FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "ok"

@@ -35,3 +35,22 @@ venture_budget_cents = 1500
 max_active_ventures = 3
 poll_minutes = 15
 min_sources_per_research = 3
+
+[sandbox]
+mode = "required"          # required | off
+bwrap = "bwrap"
+
+[cost_truth]
+usd_to_eur = 0.92
+cost_safety_multiplier_max = 5.0
+daily_hard_stop_cents = 120
+reconcile_times_utc = ["06:00", "21:45"]
+
+[backup]
+keep_daily = 14
+keep_weekly = 8
+time_utc = "22:30"
+
+[ops]
+heartbeat_stale_minutes = 15
+dashboard_port = 8787

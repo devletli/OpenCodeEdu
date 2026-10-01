@@ -110,10 +110,11 @@ def _columns(conn, table):
 def test_migrate_upgrades_v02_shape():
     conn = make_v02_db()
     assert schema_version(conn) == 2
-    assert migrate(conn) == CURRENT_SCHEMA_VERSION == 3
-    assert schema_version(conn) == 3
+    assert migrate(conn) == CURRENT_SCHEMA_VERSION == 4
+    assert schema_version(conn) == 4
     assert "venture_id" in [n for n, _ in _columns(conn, "ledger")]
     assert "venture_id" in [n for n, _ in _columns(conn, "approvals")]
+    assert "hash" in [n for n, _ in _columns(conn, "ledger")]
     # old rows kept
     assert conn.execute("SELECT COUNT(*) c FROM ledger").fetchone()["c"] == 1
     assert conn.execute("SELECT COUNT(*) c FROM human_tasks").fetchone()["c"] == 1
@@ -154,7 +155,7 @@ def test_migrate_twice_changes_nothing():
         return out
 
     before = snapshot(conn)
-    assert migrate(conn) == 3
+    assert migrate(conn) == CURRENT_SCHEMA_VERSION
     assert snapshot(conn) == before
 
 
@@ -166,7 +167,26 @@ def test_fresh_db_has_same_shape():
               "ventures", "payments"]
     for t in tables:
         assert _columns(fresh, t) == _columns(migrated, t), t
-    assert schema_version(fresh) == 3
+    assert schema_version(fresh) == CURRENT_SCHEMA_VERSION
+
+
+def test_migrate_backfills_hash_chain():
+    conn = make_v02_db()
+    # complete a proper genesis so verify's genesis check is meaningful
+    for bucket, amount in (("tokens", 3000), ("experiment", 2500),
+                           ("emergency", 1500)):
+        conn.execute(
+            "INSERT INTO ledger(kind,bucket,delta_cents,agent,ref,note)"
+            " VALUES ('fund',?,?,'system',?,'genesis')",
+            (bucket, amount, f"genesis:{bucket}"))
+    conn.commit()
+    migrate(conn)
+    from kiraci.verify import verify_ledger
+
+    assert verify_ledger(conn) == []  # chain unbroken after backfill
+    # appended entries continue the chain
+    Ledger(conn).record_income(1000, "t1")
+    assert verify_ledger(conn) == []
 
 
 def test_venture_id_flows_to_ledger_and_approvals():

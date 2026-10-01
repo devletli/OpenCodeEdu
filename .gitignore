@@ -7,6 +7,10 @@ data/*.db-*
 .ruff_cache/
 .env
 data/
+data/ipc/
+data/sandbox/
+data/backups/
+data/logs/
 workspace/
 HUMAN_INBOX.md
 data/outputs/

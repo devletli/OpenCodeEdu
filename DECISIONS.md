@@ -60,3 +60,81 @@ One bullet per decision: what, why. Autonomy contract: no questions asked.
   move: DeepSeek V4 Flash 0731 ($0.0099/$0.1307) for cheap tiers; free
   Space-Bunny/Nemotron rows rejected (unknown provenance/rate limits — wrong
   for the money pipeline).
+
+## v0.4: Hardening (TASK 4) - decisions and findings
+
+- **Step 0 environment findings (2026-10-01, Windows 11 host):**
+  - `bwrap` is NOT available on Windows (`CommandNotFoundException`), and
+    unprivileged user namespaces do not apply. Per the task, everything is
+    implemented anyway: `sandbox.status()` reports `unavailable` here, the
+    bwrap integration test is skipped with that reason, and with config
+    `mode = "required"` no real agent run is dispatched on this host (a daily
+    system notice explains the fix). `KIRACI_SANDBOX=off` +
+    `KIRACI_ALLOW_UNSANDBOXED=1` allows the six no-bash/no-write agents.
+  - Python 3.13.15, SQLite 3.50.4: `Connection.backup()` available.
+  - `os.O_NOFOLLOW` is unavailable on Windows; the broker therefore uses
+    `lstat` regular-file checks everywhere and adds `O_NOFOLLOW` only where
+    the platform provides it.
+  - opencode data paths (Step 0): auth at `%USERPROFILE%\.local\share\opencode\auth.json`,
+    config at `%USERPROFILE%\.config\opencode\opencode.jsonc`, state at
+    `%USERPROFILE%\.local\state\opencode\`. The sandbox home copies auth.json
+    + config files (0600) into a private 0700 home.
+  - `opencode stats` exists ("show token usage and cost statistics") but is a
+    per-project summary table without a machine-readable cumulative total, so
+    `LocalStatsProbe` was NOT implemented; the provider probe is the single
+    probe (preferred by the spec anyway).
+  - `.env` on this host defines KIRACI_MODEL_STRONG/MID/CHEAP, TELEGRAM_*,
+    LEMONSQUEEZY_API_KEY, KIRACI_OWNER_NAME - but no OPENROUTER_API_KEY yet,
+    so until the human adds it the system files the one `env-usage-probe`
+    task and multiplies all paid estimates by the conservative 2.0x.
+- **OpenRouter usage adapter VERIFIED against current docs**
+  (https://openrouter.ai/docs/api-reference/limits, fetched 2026-10-01):
+  `GET https://openrouter.ai/api/v1/key` returns `data.usage` (credits used,
+  all time), `data.usage_daily` (current UTC day), in USD. The probe converts
+  with `usd_to_eur` (0.92, labelled an estimate). `usage_daily` removes the
+  need for a local daily baseline in the hard-stop check.
+- **Deterministic no-LLM jobs run around the clock.** The v0.2 tick only ran
+  jobs during awake hours (06:00-22:00 UTC), but the spec schedules backup at
+  22:30 UTC and verify before it - both inside the night. `tick()` now runs
+  `_always_jobs()` (reconcile, verify, backup) in BOTH branches, and PAUSE no
+  longer skips them (a verify finding pauses the system; backups must keep
+  running exactly then). PAUSE still blocks all LLM work as before.
+- **PAUSE keeps LLM work blocked, jobs keep state**: `paused` summary line is
+  unchanged, verify/backup/reconcile events are appended after it.
+- **`booked` excludes `reconcile:` refs.** Without this exclusion a second
+  reconcile run would undo the first booking (the correction entry itself
+  would count as "booked"), breaking idempotency. Estimates are ref-NULL
+  expenses; refunds use `refund:`; corrections use `reconcile:<date>:<n>`.
+- **Hard-stop check is throttled to every 30 minutes** (kv `hardstop_checked_ts`)
+  instead of every tick: the provider endpoint is a network call and ticks run
+  every 30s. Between checks the kv-based `paid_paused_until` still binds.
+- **`python -m` entry points unchanged for agents:** mcp_server/queue_mcp keep
+  tool names and parameters; `agent`/`caller` stay optional and are IGNORED
+  ("identity is assigned by the system"). The old module-level
+  `Ledger(connect())` construction is gone - importing the MCP servers never
+  opens a database (tested).
+- **`Ledger._insert` writes `ts` from Python** (millisecond format matching
+  the SQLite default) because the hash chain needs the exact ts as input.
+  First implementation used `%f` as seconds - caught by the daily-cap test
+  (spent_today went to 0) and fixed to `%S.%f`.
+- **Agent file changes (per spec):** builder.md lost the four git allow-list
+  entries and gained the "you cannot use git" line (the orchestrator commits);
+  brain.md and the orchestrator planning prompt lost the `caller=` instruction;
+  diplomat.md gained `queue_list_ventures: true` to match TOOLS_BY_AGENT
+  (the consistency test is bidirectional). judge.md untouched.
+- **Test updates required by the new flow (assertions kept, not removed):**
+  runner child env no longer contains KIRACI_DB (assertion inverted); paid-run
+  estimates carry the 2.0x multiplier without a probe key (3c -> 6c asserted);
+  `_child_env(None)` signature in the payments test; spend-gate tests moved
+  from the old mcp_server module-level ledger to BrokerSession (the gate now
+  lives in the broker); migration tests assert version 4 and the backfilled
+  chain.
+- **Residual risks (also in deploy/README.md):** the model-provider credential
+  must be readable inside the sandbox and egress is unrestricted, so a
+  prompt-injected agent could try to exfiltrate the key; mitigation is
+  outside the software (dedicated key, provider-side spending limit, rotation).
+  On hosts without bwrap, mode `required` blocks all real agent runs (safe
+  default); the explicit unsandboxed override only ever runs agents without
+  bash/write tools.
+- **systemd-analyze verify unavailable here** (Windows host): the unit files were written to match the existing kiraci.service style; syntax was reviewed manually. Note for the deploy host: run systemd-analyze verify once after copying.
+- **Smoke checks done on this host:** v0.3 fixture DB migrated to v0.4 by the orchestrator's own connect() (hash backfilled over 4 genesis rows, verify healthy); orchestrator --once --dry-run prints its one-line summary and files env-usage-probe (no key yet); cli verify healthy, cli backup into a temp root, cli heartbeat-check exit 0 (fresh install), cli status shows sandbox/cost/heartbeat fields.

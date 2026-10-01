@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 from .rules import BUCKETS, DEFAULT_POLICY, GENESIS, Policy, decide
+
+
+def ledger_ts() -> str:
+    """Ledger timestamp, generated in Python and stored explicitly (hash input).
+
+    Format matches the SQLite default (strftime '%Y-%m-%dT%H:%M:%fZ' ->
+    milliseconds), e.g. 2026-10-01T10:26:06.052Z.
+    """
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def entry_hash(prev_hash: str, ts: str, kind: str, bucket: str, delta: int,
+               agent: str, ref: str | None, note: str,
+               venture_id: int | None) -> str:
+    """Hash-chain link. None fields become empty strings."""
+    raw = "|".join([
+        prev_hash or "", ts, kind, bucket, str(delta), agent,
+        ref or "", note, str(venture_id) if venture_id is not None else "",
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class Ledger:
@@ -25,10 +47,15 @@ class Ledger:
 
     def _insert(self, kind: str, bucket: str, delta: int, agent: str,
                 ref: str | None, note: str, venture_id: int | None = None) -> int:
+        prev = self.conn.execute(
+            "SELECT hash FROM ledger ORDER BY id DESC LIMIT 1").fetchone()
+        ts = ledger_ts()
+        h = entry_hash(prev["hash"] if prev else "", ts, kind, bucket, delta,
+                       agent, ref, note, venture_id)
         cur = self.conn.execute(
-            "INSERT INTO ledger(kind,bucket,delta_cents,agent,ref,note,venture_id)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (kind, bucket, delta, agent, ref, note, venture_id),
+            "INSERT INTO ledger(ts,kind,bucket,delta_cents,agent,ref,note,"
+            "venture_id,hash) VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, kind, bucket, delta, agent, ref, note, venture_id, h),
         )
         return int(cur.lastrowid)
 
@@ -164,6 +191,28 @@ class Ledger:
                                  note, venture_id)
             return {"status": "recorded", "experiment": -reinvest, "emergency": -reserve,
                     "owner": -owner}
+
+    def record_reconciliation(self, bucket: str, delta_cents: int, ref: str,
+                              note: str = "") -> dict:
+        """Book the difference between real provider spend and the ledger.
+
+        Negative delta = expense (we under-booked), positive delta = refund
+        (we over-booked). Agent is always `system`; idempotent through ref.
+        This is the ONLY ledger write allowed to drive a bucket below zero:
+        reality wins, and a negative bucket then blocks further spending
+        through decide().
+        """
+        if not ref:
+            raise ValueError("reconciliation reference (ref) is required")
+        if delta_cents == 0:
+            return {"status": "noop", "ref": ref}
+        kind = "expense" if delta_cents < 0 else "refund"
+        with self._tx():
+            if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (ref,)).fetchone():
+                return {"status": "duplicate", "ref": ref}
+            entry_id = self._insert(kind, bucket, delta_cents, "system", ref, note)
+            return {"status": "recorded", "entry_id": entry_id,
+                    "delta_cents": delta_cents}
 
     def approve(self, approval_id: int, decided_by: str) -> dict:
         with self._tx():

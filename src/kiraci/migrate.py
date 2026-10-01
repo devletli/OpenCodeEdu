@@ -2,9 +2,24 @@ from __future__ import annotations
 
 import sqlite3
 
+from .ledger import entry_hash
+
 #: Missing kv value means a v0.2 database.
 V02_VERSION = 2
-CURRENT_SCHEMA_VERSION = 3
+V03_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
+
+#: Exact trigger SQL; verify.py checks these exist verbatim.
+APPEND_ONLY_TRIGGERS = (
+    ("ledger_no_update",
+     ("CREATE TRIGGER ledger_no_update\n"
+      "BEFORE UPDATE ON ledger\n"
+      "BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END")),
+    ("ledger_no_delete",
+     ("CREATE TRIGGER ledger_no_delete\n"
+      "BEFORE DELETE ON ledger\n"
+      "BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END")),
+)
 
 HUMAN_TASKS_COLUMNS = (
     "id", "ts", "kind", "title", "instructions", "url", "status",
@@ -83,11 +98,14 @@ def _human_tasks_has_logged_in_action(conn: sqlite3.Connection) -> bool:
 
 
 def migrate(conn: sqlite3.Connection) -> int:
-    """Upgrade a v0.2 database to the v0.3 shape. Idempotent.
+    """Upgrade a v0.2/v0.3 database to the v0.4 shape. Idempotent.
 
-    Runs in a single transaction. Returns the resulting schema version.
-    Fresh databases (created from the updated SCHEMA strings) only get the
-    version stamp: every step below detects the new shape and skips itself.
+    v2->v3: venture_id columns, human_tasks CHECK rebuild, ventures+payments.
+    v3->v4: the ledger hash chain. The backfill rewrites every row in id order
+    inside ONE transaction; the two append-only triggers are dropped and
+    recreated here - the only place allowed to do that. Fresh databases (from
+    the updated SCHEMA strings) only get the version stamp: every step below
+    detects the new shape and skips itself.
     """
     if schema_version(conn) >= CURRENT_SCHEMA_VERSION:
         return CURRENT_SCHEMA_VERSION
@@ -112,11 +130,31 @@ def migrate(conn: sqlite3.Connection) -> int:
             conn.execute("ALTER TABLE human_tasks_new RENAME TO human_tasks")
         conn.execute(VENTURES_SCHEMA)
         conn.execute(PAYMENTS_SCHEMA)
+        if "hash" not in _columns(conn, "ledger"):
+            conn.execute("ALTER TABLE ledger ADD COLUMN hash TEXT")
+            _backfill_hash_chain(conn)
         conn.execute(
-            "INSERT INTO kv(key,value) VALUES ('schema_version','3') "
-            "ON CONFLICT(key) DO UPDATE SET value='3'")
+            "INSERT INTO kv(key,value) VALUES ('schema_version','4') "
+            "ON CONFLICT(key) DO UPDATE SET value='4'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")
         raise
     return CURRENT_SCHEMA_VERSION
+
+
+def _backfill_hash_chain(conn: sqlite3.Connection) -> None:
+    """Drop the append-only triggers, backfill the chain, recreate them."""
+    conn.execute("DROP TRIGGER IF EXISTS ledger_no_update")
+    conn.execute("DROP TRIGGER IF EXISTS ledger_no_delete")
+    prev = ""
+    rows = conn.execute(
+        "SELECT id, ts, kind, bucket, delta_cents, agent, ref, note, venture_id"
+        " FROM ledger ORDER BY id").fetchall()
+    for r in rows:
+        h = entry_hash(prev, r["ts"], r["kind"], r["bucket"], r["delta_cents"],
+                       r["agent"], r["ref"], r["note"], r["venture_id"])
+        conn.execute("UPDATE ledger SET hash=? WHERE id=?", (h, r["id"]))
+        prev = h
+    for name, sql in APPEND_ONLY_TRIGGERS:
+        conn.execute(sql)
