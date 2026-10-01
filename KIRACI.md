@@ -383,3 +383,23 @@ all logs in SQLite.
    to actions the system cannot perform itself. Section 15.1 is extended accordingly.
 6. At day 90 the system produces a break-even or "why not" report; continuing is the
    owner's decision.
+
+---
+
+## 17. Security Model (added in v0.4)
+
+1. **Agents never touch the database.** Every ledger or queue call from an agent goes
+   through a broker that runs outside the sandbox, binds the call to the identity of the
+   run (never to agent-supplied text) and enforces a per-agent tool allowlist.
+2. **Every agent run is sandboxed:** read-only system, no access to secrets files, the
+   database or other runs, a private home, and a writable area only where a task needs it.
+3. **Spend is measured, not guessed.** The provider's reported usage is reconciled with
+   the ledger daily; the difference is booked as a real expense and drives a cost
+   multiplier and a hard daily stop for paid runs.
+4. **The ledger is verified.** A hash chain, invariant checks and daily verification run
+   without any LLM. Any finding pauses the system and notifies the owner.
+5. **Backups exist and are tested** (integrity check and ledger verification on every copy).
+   Restoring is a human-only operation.
+6. **Residual risk is accepted and bounded outside the software:** the model-provider key
+   is a dedicated key with a provider-side spending limit, and egress is not restricted.
+7. **Observability is read-only.** The dashboard is loopback-only and cannot change anything.
