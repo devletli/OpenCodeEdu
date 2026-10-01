@@ -164,7 +164,7 @@ class OpencodeRunner:
                 # servers lives right next to it (systemd sets the same idea
                 # via PATH=/opt/kiraci/.venv/bin:...).
                 oc_dir = str(Path(cmd[0]).resolve().parent)
-                cmd = self.sandbox.build_command(
+                cmd = sandbox_mod.build_command(
                     project=self.root, ipc_dir=ipc_dir, sandbox_home=home,
                     worktree=wt, cwd=in_cwd, cmd=cmd,
                     bwrap=str(self.config.sandbox_value("bwrap")),
