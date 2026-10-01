@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import sandbox as sandbox_mod
+
 #: Truncation limit for stored run output.
 MAX_OUTPUT_CHARS = 200_000
 
@@ -157,10 +159,16 @@ class OpencodeRunner:
             wt = self._worktree_for(agent, Path(cwd))
             in_cwd = wt if wt is not None else self.root
             if self.sandbox.status() == "ok":
+                # The sandbox PATH must contain the directory of the resolved
+                # opencode binary; the venv python used to spawn the MCP
+                # servers lives right next to it (systemd sets the same idea
+                # via PATH=/opt/kiraci/.venv/bin:...).
+                oc_dir = str(Path(cmd[0]).resolve().parent)
                 cmd = self.sandbox.build_command(
                     project=self.root, ipc_dir=ipc_dir, sandbox_home=home,
                     worktree=wt, cwd=in_cwd, cmd=cmd,
-                    bwrap=str(self.config.sandbox_value("bwrap")))
+                    bwrap=str(self.config.sandbox_value("bwrap")),
+                    path_env=f"{oc_dir}:{sandbox_mod.DEFAULT_PATH_ENV}")
         start = time.monotonic()
         try:
             try:
