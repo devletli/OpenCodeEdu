@@ -35,6 +35,8 @@ venture_budget_cents = 1500
 max_active_ventures = 3
 poll_minutes = 15
 min_sources_per_research = 3
+payment_provider = "lemonsqueezy"
+payment_store_id = "486889"
 
 [sandbox]
 mode = "required"          # required | off

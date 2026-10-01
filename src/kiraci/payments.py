@@ -88,8 +88,11 @@ class LemonSqueezyProvider:
         return {**JSONAPI_HEADERS, "Authorization": f"Bearer {self._api_key}"}
 
     def _first_url(self) -> str:
-        params = {"page[number]": "1", "page[size]": str(PAGE_SIZE),
-                  "sort": "-created_at"}
+        # NOTE: the orders endpoint rejects `sort=created_at` (verified live:
+        # 400 "Sort parameter created_at is not allowed"). Ordering does not
+        # matter for correctness: the poll dedupes on (provider, order_id)
+        # and re-scans a 3-day overlap window on every run.
+        params = {"page[number]": "1", "page[size]": str(PAGE_SIZE)}
         if self._store_id:
             params["filter[store_id]"] = self._store_id
         return f"{API_BASE}/orders?{urllib.parse.urlencode(params)}"
