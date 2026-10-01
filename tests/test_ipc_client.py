@@ -104,3 +104,30 @@ def test_importing_mcp_clients_never_opens_a_database(monkeypatch):
     importlib.reload(mcp_server)
     importlib.reload(queue_mcp)
     assert called == []
+
+
+def test_mcp_tools_keep_real_signatures():
+    """FastMCP builds schemas by signature introspection: a *args/**kwargs
+    guard wrapper would leak 'args'/'kwargs' as required fields (found live)."""
+    import inspect
+
+    from kiraci import mcp_server, queue_mcp
+
+    assert list(inspect.signature(mcp_server.get_balances).parameters) == []
+    assert list(inspect.signature(mcp_server.request_spend).parameters)[:4] == \
+        ["agent", "bucket", "amount_eur", "purpose"]
+    assert list(inspect.signature(mcp_server.list_pending).parameters) == []
+    assert "caller" in inspect.signature(queue_mcp.create_task).parameters
+    assert list(inspect.signature(queue_mcp.list_ventures).parameters) == \
+        ["status"]
+
+
+def test_guard_returns_error_dict_on_ipc_error(monkeypatch):
+    from kiraci import ipc, mcp_server
+
+    def boom(server, tool, args, **kwargs):
+        raise ipc.IpcError("broker did not answer x")
+
+    monkeypatch.setattr(mcp_server, "call", boom)
+    out = mcp_server.get_balances()
+    assert out == {"status": "error", "reason": "broker did not answer x"}

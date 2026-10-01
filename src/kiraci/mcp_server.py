@@ -9,6 +9,8 @@ init_genesis) have no broker handler and are unreachable by construction.
 
 from __future__ import annotations
 
+import functools
+
 from mcp.server.fastmcp import FastMCP
 
 from .ipc import IpcError, call
@@ -17,13 +19,15 @@ mcp = FastMCP("kiraci-ledger")
 
 
 def _guard(fn):
+    # functools.wraps keeps the real signature: FastMCP builds the tool
+    # schema by introspection, and *args/**kwargs would leak into it as
+    # required fields and break every call.
+    @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except IpcError as e:
             return {"status": "error", "reason": str(e)}
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
     return wrapper
 
 
