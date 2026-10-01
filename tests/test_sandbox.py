@@ -142,15 +142,23 @@ def test_sandboxed_run_sees_cleared_env_and_no_db_or_secrets(tmp_path):
     sbx = Sandbox(config=Config(), root=project)
     ipc = sbx.ipc_dir("it")
     home = sbx.sandbox_home("it")
-    probe = [sys.executable, "-c",
-             ("import os, json; print(json.dumps({"
-             "'HOME': os.environ.get('HOME'),"
-             "'KIRACI_IPC_DIR': os.environ.get('KIRACI_IPC_DIR'),"
-             "'KIRACI_DB': os.environ.get('KIRACI_DB'),"
-             "'SECRET': os.environ.get('SECRET'),"
-             "'env_keys': sorted(os.environ),"
-             "'env_file': open('.env').read(),"
-             "'db_visible': os.path.exists('data/kiraci.db')})")]
+    # realpath: the venv interpreter is a symlink into the hidden real home.
+    # Reading .env may fail (user-namespace mounts are implicitly nodev) or be
+    # empty - both satisfy the mask requirement, never the secret.
+    probe_src = (
+        "import os, json\n"
+        "try:\n"
+        "    env_file = open('.env').read()\n"
+        "except OSError:\n"
+        "    env_file = '<no-read>'\n"
+        "print(json.dumps({'HOME': os.environ.get('HOME'),"
+        "'KIRACI_IPC_DIR': os.environ.get('KIRACI_IPC_DIR'),"
+        "'KIRACI_DB': os.environ.get('KIRACI_DB'),"
+        "'SECRET': os.environ.get('SECRET'),"
+        "'env_keys': sorted(os.environ),"
+        "'env_file': env_file,"
+        "'db_visible': os.path.exists('data/kiraci.db')}))")
+    probe = [os.path.realpath(sys.executable), "-c", probe_src]
     cmd = build_command(project=project, ipc_dir=ipc, sandbox_home=home,
                         worktree=None, cwd=project, cmd=probe)
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
@@ -162,6 +170,8 @@ def test_sandboxed_run_sees_cleared_env_and_no_db_or_secrets(tmp_path):
     assert data["KIRACI_DB"] is None
     assert data["SECRET"] is None
     assert "SECRET" not in data["env_keys"]
-    assert data["env_file"] == ""  # .env is masked with /dev/null
+    # the sentinel .env is masked: reading it fails or is empty (never the secret)
+    assert data["env_file"] in ("", "<no-read>")
+    assert "topsecret-value" not in data["env_file"]
     assert data["db_visible"] is False  # data/ is a tmpfs
     sbx.cleanup("it")

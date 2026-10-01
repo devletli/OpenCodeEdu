@@ -80,6 +80,15 @@ def _opencode_home_files() -> list[Path]:
     return out
 
 
+def _mirror_rel(src: Path) -> Path:
+    """Path of src inside the sandbox home: relative to the real home when
+    possible, otherwise the absolute structure without its root/drive."""
+    try:
+        return src.relative_to(Path.home())
+    except ValueError:
+        return Path(*src.parts[1:])
+
+
 class Sandbox:
     """Status probing and per-run directory preparation."""
 
@@ -136,8 +145,7 @@ class Sandbox:
         except OSError:
             pass
         for src in _opencode_home_files():
-            rel = src.relative_to(Path.home())
-            dst = home / rel
+            dst = home / _mirror_rel(src)
             dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copyfile(src, dst)
