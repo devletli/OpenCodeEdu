@@ -222,8 +222,8 @@ def render_overview(data: dict) -> str:
 def render_agents(data: list[dict]) -> str:
     out = ["<h1>Agents - what they did</h1>"]
     for a in data:
-        out.append(f"<h2>{esc(a['agent'])} "
-                   f"(spent {esc(a['spend_cents'] / 100):.2f} EUR)</h2>")
+        spent = esc(f"{a['spend_cents'] / 100:.2f}")
+        out.append(f"<h2>{esc(a['agent'])} (spent {spent} EUR)</h2>")
         out.append("<h3>Runs</h3>")
         out.append(_table(
             ["id", "ts", "est cost (c)", "duration (s)", "exit", "status"],
@@ -293,7 +293,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._page("\n".join(parts))
             else:
                 self._page("<h1>404</h1>", code=404)
-        except sqlite3.Error as e:
+        except (sqlite3.Error, ValueError, KeyError) as e:
             self._page(f"<h1>database error</h1><pre>{esc(e)}</pre>", code=500)
 
     def do_POST(self) -> None:
