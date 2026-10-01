@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import guard
+from .review import _judge_verdict
 from .store import tomorrow_0005
 
 BUILDER_RULES = (
@@ -125,10 +126,11 @@ def run_builder_task(
     jres = runner.run("judge", judge_prompt, wt, timeout, task_id=task_id)
     if jres.skipped_reason is not None:
         return defer(f"judge run skipped: {jres.skipped_reason}")
-    first = next((ln.strip() for ln in jres.text.splitlines() if ln.strip()), "")
-    if first != "ACCEPT":
+    if _judge_verdict(jres.text) != "ACCEPT":
         _remove_worktree(repo_root, wt, branch)  # branch kept for inspection
-        summary = f"judge REJECT: {jres.text.strip()[:1000]}"
+        # The judge's verdict and reasoning sit at the END of the formatted
+        # output (after the session header/tool echoes): keep the tail.
+        summary = f"judge REJECT: ...{jres.text.strip()[-1000:]}"
         store.set_status(task_id, "rejected", review="rejected",
                          branch=branch, result_summary=summary)
         return "rejected"

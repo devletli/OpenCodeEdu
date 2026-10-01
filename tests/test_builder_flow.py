@@ -123,3 +123,53 @@ def test_judge_reject_leaves_main_untouched(repo, wired):
     assert not (repo / "tools" / "gadget.py").exists()
     assert store.get_task(tid)["status"] == "rejected"
     assert len(_worktrees(repo)) == 1
+
+
+def _transcript_accept():
+    # Mirrors real opencode formatted output: header + echoes, verdict last.
+    return (
+        "\x1b[0m\n> judge · nvidia/nemotron-3-super-120b-a12b:free\n\x1b[0m\n"
+        "$ git diff --stat HEAD~1\n 1 file changed\n"
+        "\x1b[0m\nACCEPT\nScoped to tools/ with tests.\n"
+    )
+
+
+def test_verdict_parsed_from_transcript_and_merged(repo, wired):
+    store, config = wired
+
+    def writer(agent, prompt, cwd):
+        if agent == "builder":
+            d = Path(cwd) / "tools"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "gadget.py").write_text("x = 1\n", encoding="utf-8")
+            (d / "test_gadget.py").write_text("def test_x():\n    assert 1 == 1\n",
+                                              encoding="utf-8")
+
+    runner = FakeRunner(outputs={"judge": [_transcript_accept()]}, on_run=writer)
+    tid = _task(store)
+    outcome = run_builder_task(task_id=tid, store=store, runner=runner,
+                               config=config, repo_root=repo,
+                               now=datetime(2026, 1, 5, 13, 0, tzinfo=UTC))
+    assert outcome == "done"
+    assert store.get_task(tid)["status"] == "done"
+
+
+def test_verdict_missing_in_transcript_rejected(repo, wired):
+    store, config = wired
+
+    def writer(agent, prompt, cwd):
+        if agent == "builder":
+            d = Path(cwd) / "tools"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "gadget.py").write_text("x = 1\n", encoding="utf-8")
+
+    runner = FakeRunner(outputs={"judge": ["\x1b[0m\n> judge · m\nlooks fine to me"]},
+                        on_run=writer)
+    tid = _task(store)
+    outcome = run_builder_task(task_id=tid, store=store, runner=runner,
+                               config=config, repo_root=repo,
+                               now=datetime(2026, 1, 5, 13, 0, tzinfo=UTC))
+    assert outcome == "rejected"
+    assert not (repo / "tools" / "gadget.py").exists()
+    task = store.get_task(tid)
+    assert task["status"] == "rejected" and task["review"] == "rejected"

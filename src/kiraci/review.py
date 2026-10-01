@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _executed_yellow_today_cents(ledger) -> int:
@@ -22,8 +25,20 @@ def _approval_status(ledger, approval_id: int) -> str | None:
 
 
 def _judge_verdict(text: str) -> str:
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    return "ACCEPT" if first == "ACCEPT" else "REJECT"
+    """Extract the judge's verdict from opencode's formatted run output.
+
+    The formatted output prefixes a session header ("> judge · model") and
+    echoes tool calls, so the judge's final answer — whose first line is
+    exactly ACCEPT or REJECT — sits after the transcript. Take the last bare
+    verdict line (the final answer comes last); anything unparsable REJECTs
+    (fail closed).
+    """
+    verdict = "REJECT"
+    for ln in text.splitlines():
+        ln = _ANSI_RE.sub("", ln).strip()
+        if ln in ("ACCEPT", "REJECT"):
+            verdict = ln
+    return verdict
 
 
 def review_approvals(
@@ -73,7 +88,10 @@ def review_approvals(
                 if res.skipped_reason is not None:
                     reason = res.skipped_reason
                 elif res.text.strip():
-                    reason = res.text.strip().splitlines()[0][:200]
+                    # The judge's final answer is at the tail of the output;
+                    # the first line is just the opencode session header.
+                    nonempty = [ln for ln in res.text.splitlines() if ln.strip()]
+                    reason = nonempty[-1][:200]
                 else:
                     reason = "empty judge answer"
                 ledger.reject(ap["id"], "judge", str(reason)[:500])

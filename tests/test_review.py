@@ -3,7 +3,7 @@ import pytest
 from kiraci.config import Config
 from kiraci.db import connect
 from kiraci.ledger import Ledger
-from kiraci.review import review_approvals
+from kiraci.review import _judge_verdict, review_approvals
 from kiraci.store import Store
 from kiraci.testing import FakeRunner
 
@@ -86,6 +86,35 @@ def test_daily_yellow_limit_respected(ctx):
     assert len(runner.calls_for("judge")) == 1
     assert _decided_by(ctx, r1["approval_id"])[0] == "executed"
     assert _decided_by(ctx, r2["approval_id"])[0] == "pending"
+
+
+def test_verdict_parses_opencode_transcript():
+    # Real `opencode run --format default` output: session header + tool
+    # echoes first, the judge's final answer (starting with the verdict) last.
+    text = (
+        "\x1b[0m\n> judge · nvidia/nemotron-3-super-120b-a12b:free\n\x1b[0m\n"
+        "$ git diff --stat HEAD~1\n products/DISCLOSURE_POLICY.md | 91 +++++\n"
+        "\x1b[0m\nACCEPT\nTests pass and the diff is scoped to products/.\n"
+    )
+    assert _judge_verdict(text) == "ACCEPT"
+
+
+def test_verdict_last_bare_line_wins():
+    text = (
+        "> judge · some/model\n$ cat verdict.txt\nACCEPT\n"
+        "\x1b[0m\nREJECT\nGuard violation remains.\n"
+    )
+    assert _judge_verdict(text) == "REJECT"
+
+
+def test_verdict_missing_or_ansi_only_is_reject():
+    assert _judge_verdict("maybe, not sure") == "REJECT"
+    assert _judge_verdict("") == "REJECT"
+    assert _judge_verdict("\x1b[0m\n> judge · m\n\x1b[0m") == "REJECT"
+
+
+def test_verdict_with_ansi_noise_around_verdict():
+    assert _judge_verdict("\x1b[0m\n\x1b[32mACCEPT\x1b[0m\nok") == "ACCEPT"
 
 
 def test_red_creates_exactly_one_human_task_and_closes(ctx):
