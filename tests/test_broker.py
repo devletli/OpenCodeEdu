@@ -154,6 +154,7 @@ def test_request_limit_200_holds(wired):
             if len(list((s.ipc_dir / "responses").glob("*.json"))) >= 205:
                 break
             time.sleep(0.05)
+        time.sleep(0.2)  # let the broker finish writing the last responses
         errors = 0
         ok = 0
         for p in (s.ipc_dir / "responses").glob("*.json"):

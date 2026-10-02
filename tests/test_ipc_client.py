@@ -6,6 +6,7 @@ import time
 import pytest
 
 from kiraci import ipc
+from kiraci.ipc import IpcError
 
 
 @pytest.fixture
@@ -78,8 +79,9 @@ def test_timeout_gives_clear_error(ipc_root):
     assert time.monotonic() - t0 >= 0.2
 
 
-def test_missing_ipc_dir_is_a_clear_error():
-    with pytest.raises(ipc.IpcError, match="KIRACI_IPC_DIR"):
+def test_missing_ipc_dir_is_a_clear_error(monkeypatch):
+    monkeypatch.delenv("KIRACI_IPC_DIR", raising=False)
+    with pytest.raises(IpcError, match="KIRACI_IPC_DIR"):
         ipc.call("ledger", "get_balances", {}, ipc_path=None)
 
 
