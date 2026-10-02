@@ -119,9 +119,15 @@ def run_builder_task(
         return "rejected"
 
     stat = _git(["diff", "--stat", base, branch], repo_root).stdout.strip()[:4000]
+    names = _git(["diff", "--name-only", base, branch], repo_root).stdout.strip()
+    claims = (task.get("result_summary") or "")[:1500]
     judge_prompt = (
         f"Review builder task #{task_id} ({task['title']}).\n"
-        f"Diff stat vs {base[:12]}:\n{stat}\n\n"
+        f"Diff stat vs {base[:12]}:\n{stat}\n"
+        f"Changed files:\n{names}\n\n"
+        f"Builder's claims (verify them, do not trust):\n{claims}\n\n"
+        "Run the full verification: python -m pytest -q, ruff check ., "
+        "py_compile on new scripts, run new scripts with --help, secret scan.\n"
         "Decide ACCEPT or REJECT per your policy. "
         "Your answer's first non-empty line must be exactly ACCEPT or REJECT."
     )
