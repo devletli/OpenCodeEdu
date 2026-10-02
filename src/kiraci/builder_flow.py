@@ -15,7 +15,9 @@ BUILDER_RULES = (
     + ", ".join(guard.ALLOWED_PREFIXES)
     + ". Touching anything else (src/, tests/, .opencode/, deploy/, KIRACI.md, "
     "opencode.json, config.toml, data/) fails review automatically. "
-    "Include tests next to any code you add under tools/ or products/."
+    "Include tests next to any code you add under tools/ or products/. "
+    "Before finishing, run `python -m pytest -q` and `ruff check .` on your "
+    "changes and fix ALL findings; the judge rejects on any failure."
 )
 
 #: Serializes merges into the main checkout.

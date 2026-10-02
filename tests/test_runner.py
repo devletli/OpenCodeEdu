@@ -149,6 +149,126 @@ def test_resolve_opencode_binary():
     assert resolve_opencode_binary()  # non-empty string, never raises
 
 
+def test_tier_models_parses_comma_chain(wired, monkeypatch):
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/a, test/b ,test/c")
+    assert wired["config"].tier_models("cheap") == ["test/a", "test/b", "test/c"]
+    assert wired["config"].model_for("scout") == "test/a"
+    monkeypatch.delenv("KIRACI_MODEL_CHEAP")
+    assert wired["config"].tier_models("cheap") == []
+    assert wired["config"].model_for("scout") is None
+    assert wired["config"].tier_models("nope") == []
+
+
+def test_quota_exhausted_classifier():
+    from kiraci.runner import quota_exhausted
+
+    for text in ("Error 429: Rate limit exceeded: free-models-per-day",
+                 "503 Service Unavailable, provider overloaded",
+                 "model not found: openrouter/old-model:free",
+                 "No endpoints found for model"):
+        assert quota_exhausted(text), text
+    for text in ("ACCEPT\nlooks good",
+                 "401 Unauthorized: invalid api key",
+                 "something broke\n[TIMEOUT after 60s]"):
+        assert not quota_exhausted(text), text
+
+
+def _quota_cmd():
+    return _py("import sys; print('Error 429: free-models-per-day"
+               " rate limit exceeded'); sys.exit(1)")
+
+
+def test_fallback_rotates_on_quota_and_sticks(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/primary,test/spare")
+    tried = []
+
+    def builder(agent, model, prompt):
+        tried.append(model)
+        return _quota_cmd() if model == "test/primary" else _py("print('fine')")
+
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"], cmd_builder=builder)
+    res = runner.run("scout", "hi", ".", 60)
+    assert res.ok and tried == ["test/primary", "test/spare"]
+    assert wired["store"].kv_get("model_fallback_idx:cheap") == "1"
+    tried.clear()
+    res2 = runner.run("scout", "hi", ".", 60)
+    assert res2.ok and tried == ["test/spare"]  # spare tried first now
+
+
+def test_success_with_404_in_text_does_not_rotate(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/a,test/b,test/c")
+    tried = []
+
+    def builder(agent, model, prompt):
+        tried.append(model)
+        if model == "test/a":
+            return _quota_cmd()
+        # successful run whose text mentions a fetch 404: must not rotate
+        return _py("print('fetched ok; one 404 GET https://example.com noted')")
+
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"], cmd_builder=builder)
+    res = runner.run("scout", "hi", ".", 60)
+    assert res.ok and tried == ["test/a", "test/b"]
+
+
+def test_no_rotation_on_auth_failure(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/primary,test/spare")
+    tried = []
+
+    def builder(agent, model, prompt):
+        tried.append(model)
+        return _py("import sys; print('401 Unauthorized: invalid api key');"
+                   " sys.exit(1)")
+
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"], cmd_builder=builder)
+    res = runner.run("scout", "hi", ".", 60)
+    assert not res.ok and tried == ["test/primary"]
+    assert wired["store"].kv_get("model_fallback_idx:cheap") == "0"
+
+
+def test_no_rotation_on_timeout(wired, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/primary,test/spare")
+    tried = []
+
+    def builder(agent, model, prompt):
+        tried.append(model)
+        return _py("import time;time.sleep(30)")
+
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"], cmd_builder=builder)
+    res = runner.run("scout", "hi", ".", 2)
+    assert not res.ok and tried == ["test/primary"]
+    assert "[TIMEOUT after" in res.text
+
+
+def test_daily_reset_retries_primary(wired, monkeypatch):
+    from datetime import UTC, datetime
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/primary,test/spare")
+    wired["store"].kv_set("model_fallback_day", "2000-01-01")
+    wired["store"].kv_set("model_fallback_idx:cheap", "1")
+    tried = []
+
+    def builder(agent, model, prompt):
+        tried.append(model)
+        return _py("print('fine')")
+
+    runner = OpencodeRunner(ledger=wired["ledger"], store=wired["store"],
+                            config=wired["config"], cmd_builder=builder)
+    res = runner.run("scout", "hi", ".", 60)
+    assert res.ok and tried == ["test/primary"]
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    assert wired["store"].kv_get("model_fallback_day") == today
+
+
 class _SandboxStub:
     """Pretends the sandbox is unavailable: unsandboxed run with IPC wiring."""
 

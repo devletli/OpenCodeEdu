@@ -15,6 +15,7 @@ block. KIRACI_DB is never passed to agents: they talk to the broker over IPC.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -22,13 +23,47 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from . import sandbox as sandbox_mod
+from .config import TIER_ENV
 
 #: Truncation limit for stored run output.
 MAX_OUTPUT_CHARS = 200_000
+
+#: Output signatures meaning "this model is unusable right now, try the next
+#: one in the tier": rate limits, exhausted free quota, overloaded provider,
+#: or a removed/unknown model. Auth failures (bad key) and timeouts are NOT
+#: quota: rotating models cannot fix those, so they return as-is.
+_QUOTA_PATTERNS = (
+    r"429",
+    r"rate.?limit",
+    r"free-models-per-(day|min)",
+    r"\bquota\b",
+    r"insufficient.{0,20}credit",
+    r"\b503\b|\b529\b|overloaded|capacity",
+    r"model (not found|does not exist)|no endpoints|404",
+)
+_QUOTA_RE = re.compile("|".join(f"(?:{p})" for p in _QUOTA_PATTERNS),
+                       re.IGNORECASE)
+_AUTH_RE = re.compile(r"401|unauthorized|invalid.{0,20}(api.?key|key)",
+                      re.IGNORECASE)
+
+
+def quota_exhausted(text: str) -> bool:
+    """True when a FAILED run's output says the model is unusable right now.
+
+    Only called for failed runs: a successful run never rotates, even if its
+    text mentions e.g. an HTTP 404 from a web fetch.
+    """
+    t = text or ""
+    if _AUTH_RE.search(t):
+        return False
+    if "[TIMEOUT after" in t:
+        return False
+    return bool(_QUOTA_RE.search(t))
 
 #: Child environment allowlist. On Windows SYSTEMROOT/USERPROFILE/TEMP/TMP are
 #: also required, otherwise child processes cannot even start. KIRACI_DB is
@@ -130,12 +165,54 @@ class OpencodeRunner:
 
     def run(self, agent: str, prompt: str, cwd: Path, timeout_s: int,
             task_id: int | None = None) -> RunResult:
-        model = self.config.model_for(agent)
-        if model is None:
+        """Run an agent, rotating through the tier's model chain on quota errors.
+
+        Each tier env var may hold a comma-separated chain (primary first).
+        When a run fails with a quota/rate-limit/removed-model signature, the
+        next model is tried immediately in the same call; the winning model
+        sticks (kv) until the daily reset retries the primary.
+        """
+        tier = self.config.tier_for(agent)
+        models = self.config.tier_models(tier)
+        if not models:
             self.store.log_run(agent=agent, model="", est_cost_cents=0,
                                duration_s=0.0, exit_code=None, status="skipped")
             return RunResult(ok=False, text="", exit_code=None, duration_s=0.0,
                              skipped_reason="no model configured for this agent's tier")
+        self._maybe_reset_fallbacks()
+        start = self._fallback_index(tier, len(models))
+        ordered = [models[(start + i) % len(models)] for i in range(len(models))]
+        res = None
+        for pos, model in enumerate(ordered):
+            res = self._execute(agent, model, prompt, cwd, timeout_s, task_id)
+            if res.ok or res.skipped_reason is not None or not quota_exhausted(res.text):
+                if pos > 0:
+                    self._set_fallback_index(tier, models.index(model))
+                return res
+            print(f"kiraci: {model} quota-exhausted, trying next model in"
+                  f" tier {tier}", file=sys.stderr)
+        return res
+
+    def _fallback_index(self, tier: str | None, n: int) -> int:
+        try:
+            i = int(self.store.kv_get(f"model_fallback_idx:{tier}") or 0)
+        except (TypeError, ValueError):
+            i = 0
+        return i % n if n else 0
+
+    def _set_fallback_index(self, tier: str | None, i: int) -> None:
+        self.store.kv_set(f"model_fallback_idx:{tier}", str(i))
+
+    def _maybe_reset_fallbacks(self) -> None:
+        """New UTC day: retry primaries first again (free quotas reset daily)."""
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        if self.store.kv_get("model_fallback_day") != today:
+            for tier in TIER_ENV:
+                self.store.kv_set(f"model_fallback_idx:{tier}", "0")
+            self.store.kv_set("model_fallback_day", today)
+
+    def _execute(self, agent: str, model: str, prompt: str, cwd: Path,
+                 timeout_s: int, task_id: int | None) -> RunResult:
         from . import usage
         cost = usage.paid_estimate_cents(self.store, self.config, agent)
         if cost > 0:

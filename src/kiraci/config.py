@@ -49,12 +49,22 @@ class Config:
     def tier_for(self, agent: str) -> str | None:
         return self.models.get(agent)
 
+    def tier_models(self, tier: str | None) -> list[str]:
+        """Ordered model chain for a tier, primary first.
+
+        The tier env var holds a comma-separated list, e.g.
+        ``KIRACI_MODEL_CHEAP="openrouter/a:free,openrouter/b:free"``.
+        A single model (no comma) behaves exactly as before.
+        """
+        if tier not in TIER_ENV:
+            return []
+        raw = os.environ.get(TIER_ENV[tier], "") or ""
+        return [m.strip() for m in raw.split(",") if m.strip()]
+
     def model_for(self, agent: str) -> str | None:
-        """Resolved `provider/model` for an agent, or None if its tier env is missing."""
-        tier = self.tier_for(agent)
-        if tier is None:
-            return None
-        return os.environ.get(TIER_ENV.get(tier, "")) or None
+        """Primary `provider/model` for an agent, or None if tier env is missing."""
+        models = self.tier_models(self.tier_for(agent))
+        return models[0] if models else None
 
     def cost_for(self, agent: str) -> int:
         return int(self.costs.get(agent, 0))

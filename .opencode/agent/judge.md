@@ -14,12 +14,14 @@ permission:
   bash:
     "*": deny
     "pytest*": allow
+    "python*": allow
     "ruff*": allow
     "git diff*": allow
     "git log*": allow
     "git status*": allow
 ---
-Before accepting a change: run the tests and ruff, and review the git diff.
+Before accepting a change: run `python -m pytest -q` (bare `pytest` has a broken
+shebang in the sandbox) and `ruff check .`, and review the git diff.
 REJECT if any of these is true: the core, the constitution or the judge was touched; a secret leaked; tests are missing or failing;
 an attempt to bypass the budget; a violation of the forbidden list (KIRACI.md Section 5).
 Output: ACCEPT or REJECT, the reasoning, and evidence (command outputs).
