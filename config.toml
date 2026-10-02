@@ -11,9 +11,9 @@ chronicler = "cheap"
 
 [cost_cents_per_run]
 # estimated cost of one run; use 0 for free models. Charged to the "tokens" bucket.
-brain = 5
-judge = 3
-builder = 3
+brain = 0
+judge = 0
+builder = 0
 scout = 0
 seller = 0
 treasurer = 0
@@ -21,7 +21,7 @@ diplomat = 0
 chronicler = 0
 
 [limits]
-tick_seconds = 30
+tick_seconds = 10
 run_timeout_seconds = 1200
 max_task_attempts = 3
 yellow_daily_auto_approve_cents = 1000

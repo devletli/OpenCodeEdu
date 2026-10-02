@@ -14,6 +14,8 @@ tools:
 permission:
   bash:
     "*": deny
+    "ls*": allow
+    "cat*": allow
     "python*": allow
     "pytest*": allow
     "ruff*": allow

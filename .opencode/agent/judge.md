@@ -17,6 +17,7 @@ permission:
     "ruff*": allow
     "git diff*": allow
     "git log*": allow
+    "git status*": allow
 ---
 Before accepting a change: run the tests and ruff, and review the git diff.
 REJECT if any of these is true: the core, the constitution or the judge was touched; a secret leaked; tests are missing or failing;
