@@ -31,13 +31,16 @@ from .verify import verify_ledger
 SURVIVAL_TOTAL_CENTS = 1000
 
 #: agent -> list of (open, close) UTC windows. Priority-0 tasks ignore windows.
+#: Continuous operation: every agent may dispatch 06:00-22:00 UTC whenever its
+#: queue is non-empty (free models make idle gaps pointless). The 22:00-06:00
+#: night blackout is enforced separately in tick() and stays absolute.
 WINDOWS: dict[str, list[tuple[tuple[int, int], tuple[int, int]]]] = {
-    "scout": [((7, 0), (12, 0))],
-    "builder": [((12, 30), (18, 0))],
-    "seller": [((12, 30), (18, 0))],
-    "diplomat": [((18, 0), (19, 0))],
-    "treasurer": [((6, 0), (7, 0)), ((20, 0), (21, 0))],
-    "chronicler": [((20, 0), (21, 0))],
+    "scout": [((6, 0), (22, 0))],
+    "builder": [((6, 0), (22, 0))],
+    "seller": [((6, 0), (22, 0))],
+    "diplomat": [((6, 0), (22, 0))],
+    "treasurer": [((6, 0), (22, 0))],
+    "chronicler": [((6, 0), (22, 0))],
 }
 
 CONTENT_DIRS = ("journal", "research", "people", "personas", "skills", "products", "tools")

@@ -43,7 +43,7 @@ def queue(store, agent, title="Work", priority=5):
     return r["task_id"]
 
 
-def test_scout_window_respected(tmp_path, monkeypatch):
+def test_agents_dispatch_anytime_06_to_22(tmp_path, monkeypatch):
     orch, clock, store, _, _ = make_orch(
         tmp_path, monkeypatch, datetime(2026, 1, 5, 5, 0, tzinfo=UTC))
     tid = queue(store, "scout")
@@ -54,10 +54,11 @@ def test_scout_window_respected(tmp_path, monkeypatch):
     orch.tick()
     assert store.get_task(tid)["status"] == "done"
 
-    tid2 = queue(store, "scout")
-    clock["now"] = datetime(2026, 1, 5, 13, 0, tzinfo=UTC)
-    orch.tick()
-    assert store.get_task(tid2)["status"] == "pending"
+    for hh in (6, 13, 21):
+        t = queue(store, "scout", priority=4)  # ahead of any leftover p5 jobs
+        clock["now"] = datetime(2026, 1, 5, hh, 0, tzinfo=UTC)
+        orch.tick()
+        assert store.get_task(t)["status"] == "done"
 
 
 def test_priority_zero_ignores_windows_but_not_night(tmp_path, monkeypatch):
@@ -128,11 +129,11 @@ def test_survival_mode_dispatch_filter(tmp_path, monkeypatch):
     build = queue(store, "builder", "[revenue] Thing")
     assert "SURVIVAL" in orch.tick()
     assert store.get_task(revenue)["status"] == "done"
-    orch.tick()  # idle at 08:00: regular filtered, cash/builder windows closed
-    assert store.get_task(cash)["status"] == "pending"
-    clock["now"] = datetime(2026, 1, 5, 20, 5, tzinfo=UTC)
-    orch.tick()  # treasurer window 20:00-21:00 open
+    orch.tick()  # 08:00: treasurer is window-open all day now, so cash runs
     assert store.get_task(cash)["status"] == "done"
+    assert store.get_task(regular)["status"] == "pending"
+    clock["now"] = datetime(2026, 1, 5, 20, 5, tzinfo=UTC)
+    orch.tick()  # survival still filters regular (non-revenue) and build (paid)
     assert store.get_task(regular)["status"] == "pending"
     clock["now"] = datetime(2026, 1, 6, 13, 0, tzinfo=UTC)
     orch.tick()

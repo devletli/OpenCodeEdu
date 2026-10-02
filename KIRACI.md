@@ -102,17 +102,16 @@ spending (Treasurer) and whoever audits it (Judge) are never the same agent.
 
 ## 4. The 24-Hour Rhythm
 
-Running constantly burns money. So the system lives on a rhythm with busy and quiet
-periods, like a person.
+Runs on free models cost essentially nothing, so the system works whenever its
+queue is non-empty — no idle shift windows. Priority (then age) decides what
+runs next. Only the 22:00-06:00 sleep stays absolute.
 
 | Time (UTC) | Phase | What happens |
 |---|---|---|
 | 06:00 | Wake up | Watchdog health check. Treasurer's cash report for yesterday. Chronicler closes yesterday's journal. |
 | 06:30 | Morning meeting | Main Brain reviews budget + yesterday's results + opportunity list and sets the day's 3 priorities. |
-| 07:00-12:00 | Research shift | Scouts work in parallel (free models). Findings go to `research/`. |
+| 06:00-22:00 | Continuous work | Every agent dispatches whenever its queue is non-empty, lowest priority number then oldest first. Judge audits every builder output before merge. |
 | 12:00 | Midday | Main Brain evaluates findings and decides "do / wait / drop". |
-| 12:30-18:00 | Production shift | Builder + Seller work. Judge audits every output. |
-| 18:00 | Social hour | Diplomat: community interactions, incoming messages, relationship card updates. |
 | 20:00 | Evening accounting | Treasurer closes the day, Chronicler writes the journal. |
 | 22:00-06:00 | Sleep (light mode) | Only Watchdog and the order/payment listener run. Cheap-model customer support if needed. |
 | Sunday 20:00 | Weekly retrospective | What we learned, what worked, what died. Skill library updated. |
