@@ -1,0 +1,28 @@
+Verifying tasks...
+Found 3 tasks
+
+ID: 1
+Title: [revenue] Research: Niche digital product opportunities (templates, prompt packs, tool packs)
+Agent: scout
+Priority: 9
+Status: pending
+Prompt: Research and identify niche digital product opportunities including templates, prompt packs, and tool packs. Find 3+ distinct sources/URLs with evidence. Score the opportunity 0-10 based on market dem...
+--------------------------------------------------------------------------------
+
+ID: 2
+Title: [revenue] Research: Open source bounty opportunities (Algora, GitHub bounties)
+Agent: scout
+Priority: 8
+Status: pending
+Prompt: Research open source bounty platforms like Algora, GitHub Sponsors, and other bounty programs. Identify 3+ distinct sources/URLs with active bounties matching our skills. Score the opportunity 0-10. I...
+--------------------------------------------------------------------------------
+
+ID: 3
+Title: [revenue] Research: Niche research report opportunities (10-20 page PDFs)
+Agent: scout
+Priority: 6
+Status: pending
+Prompt: Research opportunities for selling niche research reports (10-20 page PDFs). Identify 3+ distinct sources/URLs showing market demand. Score the opportunity 0-10. Include specific niches, target buyers...
+--------------------------------------------------------------------------------
+
+Done

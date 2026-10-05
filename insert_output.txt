@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "D:\ProjAI\OpencodeEdu\insert_tasks.py", line 77, in <module>
+    cursor.execute("""
+    ~~~~~~~~~~~~~~^^^^
+        INSERT INTO tasks (id, title, agent, priority, status, prompt, created_at, updated_at)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    """, (task_id, task['title'], task['agent'], task['priority'], task['prompt'], created_at, created_at))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: table tasks has no column named created_at

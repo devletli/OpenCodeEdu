@@ -1,0 +1,3 @@
+Starting fix...
+Exception: CHECK constraint failed: priority BETWEEN 0 AND 9
+Script done

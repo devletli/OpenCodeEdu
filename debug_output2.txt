@@ -1,0 +1,4 @@
+Starting insert...
+Connected to DB
+Exception: table tasks has no column named created_at
+Script done

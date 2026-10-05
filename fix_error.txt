@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "D:\ProjAI\OpencodeEdu\fix_priorities2.py", line 11, in <module>
+    cursor.execute("UPDATE tasks SET priority = 10 WHERE id = 1")
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.IntegrityError: CHECK constraint failed: priority BETWEEN 0 AND 9
