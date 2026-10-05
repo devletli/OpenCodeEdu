@@ -101,7 +101,21 @@ def resolve_opencode_binary() -> str:
     shim (npm layout: node_modules/opencode-ai/bin/opencode.exe).
     Resolved once at runner construction, while the parent env (full PATH)
     is still intact.
+
+    On POSIX, a native Linux build is preferred over any Windows-interop
+    path (e.g. /mnt/c/...): the interop boundary drops unknown environment
+    variables for child processes, which silently breaks KIRACI_IPC_DIR
+    delivery to MCP servers (verified live: children saw a Windows env
+    without our variables).
     """
+    if os.name == "posix":
+        for cand in (Path.home() / ".opencode" / "bin" / "opencode",
+                     Path("/usr/local/bin/opencode")):
+            try:
+                if cand.is_file() and os.access(cand, os.X_OK):
+                    return str(cand)
+            except OSError:
+                continue
     found = shutil.which("opencode")
     if found and found.lower().endswith(".exe"):
         return found

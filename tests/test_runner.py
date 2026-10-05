@@ -149,6 +149,39 @@ def test_resolve_opencode_binary():
     assert resolve_opencode_binary()  # non-empty string, never raises
 
 
+def test_resolve_prefers_native_linux_binary(tmp_path, monkeypatch):
+    """Windows-interop paths drop unknown env vars for children (verified
+    live: MCP servers never saw KIRACI_IPC_DIR). A native Linux build in
+    ~/.opencode/bin must win over any /mnt/... shim on PATH."""
+    import os
+    import shutil
+
+    from kiraci.runner import resolve_opencode_binary
+
+    if os.name != "posix":
+        pytest.skip("POSIX-only resolution order")
+    native = tmp_path / ".opencode" / "bin" / "opencode"
+    native.parent.mkdir(parents=True)
+    native.write_text("#!/bin/sh\n", encoding="utf-8")
+    native.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: "/mnt/c/shim/opencode")
+    assert resolve_opencode_binary() == str(native)
+
+
+def test_resolve_falls_back_to_path_without_native(tmp_path, monkeypatch):
+    import os
+    import shutil
+
+    from kiraci.runner import resolve_opencode_binary
+
+    if os.name != "posix":
+        pytest.skip("POSIX-only resolution order")
+    monkeypatch.setenv("HOME", str(tmp_path))  # no .opencode/bin here
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/opencode")
+    assert resolve_opencode_binary() == "/usr/bin/opencode"
+
+
 def test_tier_models_parses_comma_chain(wired, monkeypatch):
     monkeypatch.setenv("KIRACI_MODEL_CHEAP", "test/a, test/b ,test/c")
     assert wired["config"].tier_models("cheap") == ["test/a", "test/b", "test/c"]
