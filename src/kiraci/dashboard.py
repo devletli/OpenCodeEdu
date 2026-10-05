@@ -1,18 +1,27 @@
-"""Read-only observability dashboard. stdlib http.server only.
+"""Observability dashboard with one narrow write action. stdlib http.server only.
 
 Binds to 127.0.0.1 ONLY (hard-coded, no option to change) - access it through
-an SSH tunnel. GET is the only allowed method; the database is opened
-read-only (mode=ro URI); when that fails under WAL while the daemon writes, a
-cached in-memory copy made with the backup API every 10 seconds is served.
-Every dynamic value is html.escape()d: agent output is untrusted. No
-JavaScript. Resolves/dismisses/approvals do NOT exist here by design.
+an SSH tunnel. Reads use GET against a read-only (mode=ro URI) database; when
+that fails under WAL while the daemon writes, a cached in-memory copy made
+with the backup API every 10 seconds is served. Every dynamic value is
+html.escape()d: agent output is untrusted. No JavaScript.
+
+The ONLY state change allowed here is resolving/dismissing Human Inbox tasks
+(KIRACI.md Section 18, owner-authorized): POST /human/<id>/done|dismiss with
+a per-process CSRF token rendered into a confirm page. GET never mutates.
+Approvals, spending, task creation, ventures, payments and restore stay
+CLI-only and have no handler here by design.
 """
 
 from __future__ import annotations
 
+import hmac
 import html
+import re
+import secrets
 import sqlite3
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,7 +35,11 @@ STYLE = ("body{font-family:system-ui,sans-serif;margin:1.5rem;background:#fafafa
 
 
 class DashboardState:
-    """Read-only database access with a WAL-safe in-memory fallback."""
+    """Read-only database access with a WAL-safe in-memory fallback.
+
+    Writes go through exactly one method (resolve_human_task) using a
+    separate writable connection; reads never do.
+    """
 
     def __init__(self, db_path: str, root: Path):
         self.db_path = str(db_path)
@@ -34,6 +47,9 @@ class DashboardState:
         self._lock = threading.Lock()
         self._cache: sqlite3.Connection | None = None
         self._cache_ts = 0.0
+        # Per-process CSRF token: rendered into confirm forms, checked on
+        # every POST. Regenerated on each dashboard start.
+        self.csrf_token = secrets.token_hex(16)
 
     def conn(self) -> sqlite3.Connection:
         uri = f"file:{self.db_path}?mode=ro"
@@ -108,6 +124,53 @@ class DashboardState:
             return [dict(r) for r in conn.execute(
                 "SELECT id, ts, agent, title, status, priority, attempts,"
                 " result_summary FROM tasks ORDER BY id DESC LIMIT 100")]
+        finally:
+            conn.close()
+
+    # ---------- human inbox (the only writable area) ----------
+    def human_open(self) -> list[dict]:
+        conn = self.conn()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT id, kind, title, status FROM human_tasks"
+                " WHERE status='open' ORDER BY id")]
+        finally:
+            conn.close()
+
+    def human_task(self, task_id: int) -> dict | None:
+        conn = self.conn()
+        try:
+            row = conn.execute(
+                "SELECT id, kind, title, instructions, url, status,"
+                " created_by, dedupe_key FROM human_tasks WHERE id=?",
+                (task_id,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def resolve_human_task(
+        self, task_id: int, status: str, note: str = ""
+    ) -> dict:
+        """Resolve/dismiss a human task via a dedicated writable connection.
+
+        Only 'done'/'dismissed' are possible here; there is no handler for
+        approvals, spending, task creation or anything else.
+        """
+        from .db import connect as db_connect
+        from .store import Store, find_secret
+
+        if status not in ("done", "dismissed"):
+            return {"status": "error",
+                    "reason": "status must be done or dismissed"}
+        bad = find_secret(note or "")
+        if bad:
+            return {"status": "error",
+                    "reason": f"refused: note {bad};"
+                              " secrets do not belong here"}
+        conn = db_connect(self.db_path)
+        try:
+            return Store(conn).resolve_human_task(
+                task_id, status=status, note=note or "")
         finally:
             conn.close()
 
@@ -200,10 +263,12 @@ def render_overview(data: dict) -> str:
            _table(["agent", "spent (EUR)", "entries"],
                   [[esc(r["agent"]), esc(r["s"] / 100), esc(r["n"])]
                    for r in data["spend"]["by_agent"]]),
-           "<h2>Open human tasks</h2>",
-           _table(["id", "kind", "title"],
-                  [[esc(t["id"]), esc(t["kind"]), esc(t["title"])]
-                   for t in data["human"]]),
+            "<h2>Open human tasks</h2>",
+            ("<table><tr><th>id</th><th>kind</th><th>title</th></tr>" + "".join(
+                f"<tr><td><a href='/human/{esc(t['id'])}'>{esc(t['id'])}</a>"
+                f"</td><td>{esc(t['kind'])}</td><td>{esc(t['title'])}</td></tr>"
+                for t in data["human"]) + "</table>"
+             if data["human"] else "<p><em>empty</em></p>"),
            "<h2>Ventures</h2>",
            _table(["id", "name", "status", "score"],
                   [[esc(v["id"]), esc(v["name"]), esc(v["status"]), esc(v["score"])]
@@ -217,6 +282,42 @@ def render_overview(data: dict) -> str:
                   [[esc(r["id"]), esc(r["ts"]), esc(r["agent"]), esc(r["task_id"]),
                     esc(r["est_cost_cents"]), esc(r["status"])] for r in data["runs"]])]
     return "\n".join(out)
+
+
+def render_human_list(tasks: list[dict]) -> str:
+    rows = "".join(
+        f"<tr><td>{esc(t['id'])}</td><td>{esc(t['kind'])}</td>"
+        f"<td><a href='/human/{esc(t['id'])}'>{esc(t['title'])}</a></td>"
+        f"<td>{esc(t['status'])}</td></tr>" for t in tasks)
+    table = (f"<table><tr><th>id</th><th>kind</th><th>title</th>"
+             f"<th>status</th></tr>{rows}</table>" if rows
+             else "<p><em>no open human tasks</em></p>")
+    return "<h1>Human inbox</h1>" + table
+
+
+def render_human_confirm(task: dict, csrf_token: str) -> str:
+    tid = esc(task["id"])
+    form = (f"<form method='post' action='/human/{tid}/done'>"
+            f"<input type='hidden' name='csrf' value='{esc(csrf_token)}'>"
+            "<p><label>Note: "
+            "<input type='text' name='note' maxlength='500' size='60'>"
+            "</label></p>"
+            "<p><button type='submit'>done</button> "
+            f"<button type='submit' formaction='/human/{tid}/dismiss'>"
+            "dismiss</button></p></form>")
+    return ("\n".join([
+        f"<h1>Human task #{tid}</h1>",
+        _table(["", "value"], [
+            ["Kind", esc(task["kind"])],
+            ["Title", esc(task["title"])],
+            ["Instructions", esc(task["instructions"])],
+            ["URL", esc(task["url"])],
+            ["Status", esc(task["status"])],
+            ["Created by", esc(task["created_by"])],
+        ]),
+        form if task["status"] == "open"
+        else "<p><em>already resolved; no action possible</em></p>",
+    ]))
 
 
 def render_agents(data: list[dict]) -> str:
@@ -245,7 +346,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _page(self, body: str, code: int = 200) -> None:
         nav = ("<p><a href='/'>overview</a> | <a href='/agents'>agents</a> | "
                "<a href='/ledger'>ledger</a> | <a href='/tasks'>tasks</a> | "
-               "<a href='/research'>research</a></p>")
+               "<a href='/research'>research</a> | "
+               "<a href='/human'>human inbox</a></p>")
         doc = (f"<!doctype html><html><head><meta charset='utf-8'>"
                f"<title>kiraci</title><style>{STYLE}</style></head>"
                f"<body>{nav}{body}</body></html>")
@@ -291,13 +393,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 for name, text in items:
                     parts.append(f"<h2>{esc(name)}</h2><pre>{esc(text)}</pre>")
                 self._page("\n".join(parts))
+            elif path == "/human":
+                self._page(render_human_list(self.state.human_open()))
+            elif (m := re.fullmatch(r"/human/(\d+)", path)):
+                task = self.state.human_task(int(m.group(1)))
+                if task is None:
+                    self._page("<h1>404</h1><p>no such human task</p>",
+                               code=404)
+                else:
+                    self._page(render_human_confirm(
+                        task, self.state.csrf_token))
             else:
                 self._page("<h1>404</h1>", code=404)
         except (sqlite3.Error, ValueError, KeyError) as e:
             self._page(f"<h1>database error</h1><pre>{esc(e)}</pre>", code=500)
 
     def do_POST(self) -> None:
-        self._method_not_allowed()
+        try:
+            path = self.path.split("?", 1)[0]
+            m = re.fullmatch(r"/human/(\d+)/(done|dismiss)", path)
+            if not m:
+                self._method_not_allowed()
+                return
+            task_id = int(m.group(1))
+            action = m.group(2)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > 8192:
+                self._page("<h1>400</h1><p>bad form body</p>", code=400)
+                return
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            fields = urllib.parse.parse_qs(raw, max_num_fields=10)
+            token = fields.get("csrf", [""])[0]
+            note = fields.get("note", [""])[0][:500]
+            if not hmac.compare_digest(token, self.state.csrf_token):
+                self._page("<h1>403</h1><p>bad CSRF token; reload the"
+                           " confirm page and retry</p>", code=403)
+                return
+            res = self.state.resolve_human_task(
+                task_id, "done" if action == "done" else "dismissed",
+                note)
+            if res.get("status") == "error":
+                reason = str(res.get("reason", "error"))
+                code = 404 if "no open human task" in reason else 400
+                self._page(f"<h1>{code}</h1><pre>{esc(reason)}</pre>"
+                           f"<p><a href='/human/{task_id}'>back</a></p>",
+                           code=code)
+                return
+            self._redirect("/human")
+        except (sqlite3.Error, ValueError, OSError) as e:
+            self._page(f"<h1>database error</h1><pre>{esc(e)}</pre>",
+                       code=500)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; style-src 'unsafe-inline'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_PUT(self) -> None:
         self._method_not_allowed()
@@ -325,9 +483,36 @@ def make_server(state: DashboardState, port: int) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 
+def resolve_db_path(root: Path) -> str:
+    """Database file the dashboard serves.
+
+    KIRACI_DB wins when set (same variable the CLI uses); otherwise
+    <root>/data/kiraci.db. This keeps the GUI and the CLI on the same
+    database instead of silently diverging.
+    """
+    import os
+
+    override = os.environ.get("KIRACI_DB")
+    if override:
+        return str(Path(override))
+    return str(Path(root).resolve() / "data" / "kiraci.db")
+
+
 def serve(root: Path, config) -> None:
     port = int(config.ops_value("dashboard_port"))
-    db_path = str(Path(root) / "data" / "kiraci.db")
+    db_path = resolve_db_path(root)
     srv = make_server(DashboardState(db_path, root), port)
     print(f"kiraci dashboard on http://127.0.0.1:{port} (loopback only)")
+    print(f"kiraci dashboard serving db: {db_path}")
     srv.serve_forever()
+
+
+def main() -> None:
+    from .config import load_config
+
+    root = Path.cwd()
+    serve(root, load_config())
+
+
+if __name__ == "__main__":
+    main()
