@@ -18,7 +18,12 @@ import math
 import os
 import urllib.request
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .ledger import Ledger
+    from .store import Store
 
 OPENROUTER_KEY_ENDPOINT = "https://openrouter.ai/api/v1/key"
 USAGE_TIMEOUT_S = 10
@@ -35,17 +40,19 @@ class UsageProbe(Protocol):
 
 
 class HttpClient(Protocol):
-    def get_json(self, url: str, headers: dict[str, str]) -> dict | None: ...
+    def get_json(self, url: str, headers: dict[str, str]
+                 ) -> dict[str, Any] | None: ...
 
 
 class UrllibClient:
-    def get_json(self, url: str, headers: dict[str, str]) -> dict | None:
+    def get_json(self, url: str, headers: dict[str, str]) -> dict[str, Any] | None:
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=USAGE_TIMEOUT_S) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8"))
         except (OSError, ValueError):
             return None
+        return data if isinstance(data, dict) else None
 
 
 class OpenRouterProbe:
@@ -79,7 +86,7 @@ class OpenRouterProbe:
         return None if usd is None else round(usd * self.usd_to_eur * 100)
 
 
-def get_probe(config) -> UsageProbe | None:
+def get_probe(config: Config) -> UsageProbe | None:
     """The provider probe, or None without a key (runner then uses 2.0x)."""
     key = os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
@@ -88,7 +95,7 @@ def get_probe(config) -> UsageProbe | None:
         api_key=key, usd_to_eur=float(config.cost_truth_value("usd_to_eur")))
 
 
-def ensure_probe_task(store) -> None:
+def ensure_probe_task(store: Store) -> None:
     """Exactly one human task asking for OPENROUTER_API_KEY in .env."""
     store.add_human_task(
         kind="secret_provisioning",
@@ -104,7 +111,7 @@ def ensure_probe_task(store) -> None:
     )
 
 
-def paid_estimate_cents(store, config, agent: str) -> int:
+def paid_estimate_cents(store: Store, config: Config, agent: str) -> int:
     """Estimate charged to the tokens bucket: ceil(config_cost * multiplier).
 
     Without a working probe the multiplier is conservatively 2.0.
@@ -123,7 +130,7 @@ def paid_estimate_cents(store, config, agent: str) -> int:
     return math.ceil(cost * mult)
 
 
-def _reconcile_ref(store, now: datetime) -> str:
+def _reconcile_ref(store: Store, now: datetime) -> str:
     day = now.strftime("%Y-%m-%d")
     n = 1
     for r in store.conn.execute(
@@ -136,7 +143,7 @@ def _reconcile_ref(store, now: datetime) -> str:
     return f"reconcile:{day}:{n}"
 
 
-def booked_since_cents(store, since_iso: str | None) -> int:
+def booked_since_cents(store: Store, since_iso: str | None) -> int:
     """Token estimates charged since `since_iso`, excluding reconciliation
     entries themselves (those ARE the correction, not an estimate)."""
     excl = "AND (ref IS NULL OR ref NOT LIKE 'reconcile:%')"
@@ -148,12 +155,13 @@ def booked_since_cents(store, since_iso: str | None) -> int:
     else:
         row = store.conn.execute(
             f"""SELECT COALESCE(SUM(-delta_cents),0) s FROM ledger
-               WHERE bucket='tokens' AND kind IN ('expense','refund') {excl}"""
+                WHERE bucket='tokens' AND kind IN ('expense','refund') {excl}"""
         ).fetchone()
-    return int(row["s"])
+    return int(row["s"] or 0)
 
 
-def reconcile(store, ledger, config, probe, now: datetime) -> dict:
+def reconcile(store: Store, ledger: Ledger, config: Config,
+              probe: UsageProbe | None, now: datetime) -> dict[str, Any]:
     """One reconciliation round. actual - booked is booked into the ledger."""
     if probe is None:
         ensure_probe_task(store)
@@ -184,12 +192,12 @@ def reconcile(store, ledger, config, probe, now: datetime) -> dict:
             "delta": delta, "ref": booked_ref, "multiplier": mult}
 
 
-def _clamp_multiplier(ratio: float, config) -> float:
+def _clamp_multiplier(ratio: float, config: Config) -> float:
     lo, hi = 1.0, float(config.cost_truth_value("cost_safety_multiplier_max"))
     return min(hi, max(lo, ratio))
 
 
-def _update_multiplier(store, config, *, actual: int, booked: int,
+def _update_multiplier(store: Store, config: Config, *, actual: int, booked: int,
                        now: datetime) -> float | None:
     """7-day rolling actual/booked, clamped to [1.0, max]; stored in kv.
 
@@ -227,7 +235,7 @@ def _update_multiplier(store, config, *, actual: int, booked: int,
     return mult
 
 
-def paid_paused(store, now: datetime) -> bool:
+def paid_paused(store: Store, now: datetime) -> bool:
     """True while the hard daily stop is in effect."""
     until = store.kv_get("paid_paused_until")
     if not until:
@@ -238,7 +246,8 @@ def paid_paused(store, now: datetime) -> bool:
         return False
 
 
-def check_hard_stop(store, config, probe, now: datetime) -> str | None:
+def check_hard_stop(store: Store, config: Config, probe: UsageProbe | None,
+                    now: datetime) -> str | None:
     """Pause paid runs when provider-reported spend today exceeds the cap."""
     if probe is None:
         return None

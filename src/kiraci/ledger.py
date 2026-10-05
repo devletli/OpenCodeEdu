@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 from .rules import BUCKETS, DEFAULT_POLICY, GENESIS, Policy, decide
 
@@ -57,7 +58,9 @@ class Ledger:
             "venture_id,hash) VALUES (?,?,?,?,?,?,?,?,?)",
             (ts, kind, bucket, delta, agent, ref, note, venture_id, h),
         )
-        return int(cur.lastrowid)
+        row_id = cur.lastrowid
+        assert row_id is not None  # INSERT always yields a row id
+        return int(row_id)
 
     def _log_approval(self, agent: str, bucket: str, amount: int, purpose: str,
                       tier: str, status: str, reason: str,
@@ -71,7 +74,9 @@ class Ledger:
             (agent, bucket, amount, purpose, tier, status, reason,
              decided_by, decided_by, entry_id, venture_id),
         )
-        return int(cur.lastrowid)
+        row_id = cur.lastrowid
+        assert row_id is not None  # INSERT always yields a row id
+        return int(row_id)
 
     def _balances(self) -> dict[str, int]:
         out = {b: 0 for b in BUCKETS}
@@ -98,13 +103,13 @@ class Ledger:
     def total_balance(self) -> int:
         return sum(v for k, v in self._balances().items() if k != "owner")
 
-    def recent(self, limit: int = 20) -> list[dict]:
+    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM ledger ORDER BY id DESC LIMIT ?", (max(1, min(limit, 200)),)
         )
         return [dict(r) for r in rows]
 
-    def pending(self) -> list[dict]:
+    def pending(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM approvals WHERE status='pending' ORDER BY id"
         )
@@ -112,7 +117,7 @@ class Ledger:
 
     # ---------- spend requests (open to agents) ----------
     def request_spend(self, agent: str, bucket: str, amount_cents: int, purpose: str,
-                      venture_id: int | None = None) -> dict:
+                      venture_id: int | None = None) -> dict[str, Any]:
         with self._tx():
             bal = self._balances()
             d = decide(
@@ -153,7 +158,7 @@ class Ledger:
                              "genesis budget")
 
     def record_income(self, amount_cents: int, ref: str, note: str = "",
-                      agent: str = "webhook", venture_id: int | None = None) -> dict:
+                      agent: str = "webhook", venture_id: int | None = None) -> dict[str, Any]:
         """Income split: 50% experiment, 30% emergency, 20% owner. Idempotent via ref."""
         if amount_cents <= 0:
             raise ValueError("income must be positive")
@@ -173,7 +178,7 @@ class Ledger:
                     "owner": owner}
 
     def record_refund(self, amount_cents: int, ref: str, note: str = "",
-                      agent: str = "webhook", venture_id: int | None = None) -> dict:
+                      agent: str = "webhook", venture_id: int | None = None) -> dict[str, Any]:
         """Mirror of record_income with negative deltas. Idempotent via ref.
 
         Refunds are the ONLY path that may push a bucket negative; spends still
@@ -197,7 +202,7 @@ class Ledger:
                     "owner": -owner}
 
     def record_reconciliation(self, bucket: str, delta_cents: int, ref: str,
-                              note: str = "") -> dict:
+                              note: str = "") -> dict[str, Any]:
         """Book the difference between real provider spend and the ledger.
 
         Negative delta = expense (we under-booked), positive delta = refund
@@ -218,7 +223,7 @@ class Ledger:
             return {"status": "recorded", "entry_id": entry_id,
                     "delta_cents": delta_cents}
 
-    def approve(self, approval_id: int, decided_by: str) -> dict:
+    def approve(self, approval_id: int, decided_by: str) -> dict[str, Any]:
         with self._tx():
             row = self.conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
             if row is None or row["status"] != "pending":
@@ -239,7 +244,7 @@ class Ledger:
                 (decided_by, entry_id, approval_id))
             return {"status": "executed", "entry_id": entry_id}
 
-    def reject(self, approval_id: int, decided_by: str, reason: str = "rejected by human") -> dict:
+    def reject(self, approval_id: int, decided_by: str, reason: str = "rejected by human") -> dict[str, Any]:
         with self._tx():
             cur = self.conn.execute(
                 """UPDATE approvals SET status='rejected', reason=?, decided_by=?,

@@ -22,9 +22,10 @@ import shutil
 import stat
 import threading
 from pathlib import Path
+from typing import Any
 
 from . import permissions, ventures
-from .config import load_config
+from .config import Config, load_config
 from .ledger import Ledger
 from .store import Store
 
@@ -43,7 +44,7 @@ HUMAN_ONLY_OPERATIONS = frozenset({
 })
 
 
-def _depth_ok(obj, depth: int = 0) -> bool:
+def _depth_ok(obj: Any, depth: int = 0) -> bool:
     if depth > MAX_JSON_DEPTH:
         return False
     if isinstance(obj, dict):
@@ -55,7 +56,7 @@ def _depth_ok(obj, depth: int = 0) -> bool:
     return True
 
 
-def _read_request(path: Path) -> dict:
+def _read_request(path: Path) -> dict[str, Any]:
     """Read and validate one request file. Raises ValueError on any problem.
 
     Error messages never contain file content.
@@ -101,8 +102,10 @@ def _read_request(path: Path) -> dict:
 class BrokerSession:
     """Executes whitelisted tool calls for one agent run, with real identity."""
 
-    def __init__(self, run_id: str, agent: str, ipc_dir: Path, *, root=None,
-                 ledger=None, store=None, connect_fn=None, config=None):
+    def __init__(self, run_id: str, agent: str, ipc_dir: Path, *,
+                 root: Path | str | None = None,
+                 ledger: Ledger | None = None, store: Store | None = None,
+                 connect_fn: Any = None, config: Config | None = None) -> None:
         self.run_id = str(run_id)
         self.agent = agent
         self.ipc_dir = Path(ipc_dir)
@@ -179,7 +182,7 @@ class BrokerSession:
         except OSError:
             pass
 
-    def _respond(self, name: str, payload: dict) -> None:
+    def _respond(self, name: str, payload: dict[str, Any]) -> None:
         resp = self.ipc_dir / "responses" / name
         tmp = self.ipc_dir / "responses" / f".{name}.tmp"
         try:
@@ -190,7 +193,7 @@ class BrokerSession:
             pass  # responses are informational; the DB holds the truth
 
     # ---------- dispatch ----------
-    def execute(self, server: str, tool: str, args: dict) -> dict:
+    def execute(self, server: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         name = f"{server}_{tool}"
         if not permissions.tool_allowed(self.agent, server, tool):
             return {"ok": False,
@@ -206,25 +209,27 @@ class BrokerSession:
 
     # ---------- handler resources (lazy, own connection) ----------
     @property
-    def ledger(self):
+    def ledger(self) -> Ledger:
         if self._ledger is None:
             self._connect()
+        assert self._ledger is not None
         return self._ledger
 
     @property
-    def store(self):
+    def store(self) -> Store:
         if self._store is None:
             self._connect()
+        assert self._store is not None
         return self._store
 
     @property
-    def config(self):
+    def config(self) -> Config:
         if self._config is None:
             try:
                 self._config = load_config()
             except (OSError, ValueError):
-                from .config import Config
                 self._config = Config()
+        assert self._config is not None
         return self._config
 
     def _connect(self) -> None:
@@ -239,10 +244,10 @@ class BrokerSession:
             self._store = Store(conn)
 
     # ---------- handlers (identity bound to the session) ----------
-    def _h_get_balances(self, args: dict) -> dict:
+    def _h_get_balances(self, args: dict[str, Any]) -> dict[str, Any]:
         return {k: v / 100 for k, v in self.ledger.balances().items()}
 
-    def _h_request_spend(self, args: dict) -> dict:
+    def _h_request_spend(self, args: dict[str, Any]) -> dict[str, Any]:
         bucket = str(args.get("bucket", ""))
         try:
             amount = round(float(args.get("amount_eur", 0)) * 100)
@@ -262,17 +267,17 @@ class BrokerSession:
         return self.ledger.request_spend(
             self.agent, bucket, amount, purpose, venture_id=venture_id)
 
-    def _h_list_pending(self, args: dict) -> list[dict]:
+    def _h_list_pending(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         return self.ledger.pending()
 
-    def _h_recent_entries(self, args: dict) -> list[dict]:
+    def _h_recent_entries(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             limit = int(args.get("limit", 20))
         except (TypeError, ValueError):
             limit = 20
         return self.ledger.recent(limit)
 
-    def _h_create_task(self, args: dict) -> dict:
+    def _h_create_task(self, args: dict[str, Any]) -> dict[str, Any]:
         return self.store.create_task(
             agent=str(args.get("agent", "")),
             title=str(args.get("title", "")),
@@ -282,7 +287,7 @@ class BrokerSession:
             created_by=self.agent,  # identity comes from the run, not the caller
         )
 
-    def _h_list_tasks(self, args: dict) -> list[dict]:
+    def _h_list_tasks(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         status = args.get("status")
         if status is not None and status not in (
             "pending", "running", "blocked", "done", "failed", "rejected", "cancelled",
@@ -294,7 +299,7 @@ class BrokerSession:
             limit = 30
         return self.store.list_tasks(status=status, limit=limit)
 
-    def _h_request_human_action(self, args: dict) -> dict:
+    def _h_request_human_action(self, args: dict[str, Any]) -> dict[str, Any]:
         result = self.store.add_human_task(
             kind=str(args.get("kind", "")),
             title=str(args.get("title", "")),
@@ -313,13 +318,13 @@ class BrokerSession:
                 print(f"kiraci: inbox notify failed: {e}", file=sys.stderr)
         return result
 
-    def _h_list_human_tasks(self, args: dict) -> list[dict]:
+    def _h_list_human_tasks(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         status = args.get("status", "open")
         if status not in ("open", "done", "dismissed"):
             return [{"status": "error", "reason": f"unknown status: {status}"}]
         return self.store.list_human_tasks(status=status)
 
-    def _h_create_venture(self, args: dict) -> dict:
+    def _h_create_venture(self, args: dict[str, Any]) -> dict[str, Any]:
         return ventures.create_venture(
             self.store, self.root,
             name=str(args.get("name", "")),
@@ -332,7 +337,7 @@ class BrokerSession:
             min_sources=int(self.config.revenue_value("min_sources_per_research")),
         )
 
-    def _h_update_venture(self, args: dict) -> dict:
+    def _h_update_venture(self, args: dict[str, Any]) -> dict[str, Any]:
         try:
             return ventures.update_venture(
                 self.store, self.root, int(args.get("venture_id", 0)),
@@ -341,7 +346,7 @@ class BrokerSession:
         except (ValueError, TypeError) as e:
             return {"status": "error", "reason": str(e)}
 
-    def _h_list_ventures(self, args: dict) -> list[dict]:
+    def _h_list_ventures(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         return ventures.list_ventures(self.store.conn, args.get("status"))
 
 

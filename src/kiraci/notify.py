@@ -8,6 +8,10 @@ import sys
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .store import Store
 
 DIGEST_EVERY_SECONDS = 6 * 3600
 
@@ -41,7 +45,8 @@ def _send_telegram(text: str) -> None:
         print(f"kiraci: telegram send failed: {e}", file=sys.stderr)
 
 
-def notify_human(task: dict, *, root: Path | str | None = None, store=None) -> Path:
+def notify_human(task: dict[str, Any], *, root: Path | str | None = None,
+                 store: Store | None = None) -> Path:
     """Append a human task to HUMAN_INBOX.md and optionally Telegram it.
 
     Always writes the inbox file. Sends at most one Telegram message per task.
@@ -79,7 +84,7 @@ def notify_human(task: dict, *, root: Path | str | None = None, store=None) -> P
     return inbox
 
 
-def send_info(text: str, store, *, root: Path | str | None = None) -> None:
+def send_info(text: str, store: Store, *, root: Path | str | None = None) -> None:
     """One-way informational message (day-90 review, weekly metrics digest).
 
     Telegram if configured, plus a dated line in HUMAN_INBOX.md. Never a human
@@ -98,7 +103,7 @@ def send_info(text: str, store, *, root: Path | str | None = None) -> None:
         print(f"kiraci: info notify failed: {e}", file=sys.stderr)
 
 
-def maybe_send_digest(store, *, root: Path | str | None = None) -> bool:
+def maybe_send_digest(store: Store, *, root: Path | str | None = None) -> bool:
     """Send a digest of all open tasks every 6 h while any are open."""
     if _telegram_config() is None:
         return False

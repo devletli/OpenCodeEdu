@@ -4,6 +4,10 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .store import Store
 
 VENTURE_KINDS = ("digital_product", "bounty", "report", "micro_saas", "other")
 VENTURE_STATUSES = ("researching", "validating", "building", "live", "paused", "dead")
@@ -41,22 +45,22 @@ def find_urls(text: str) -> set[str]:
     return urls
 
 
-def _row_to_dict(row) -> dict:
+def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
 # ---------- reads (conn is enough) ----------
-def get_venture(conn: sqlite3.Connection, venture_id: int) -> dict | None:
+def get_venture(conn: sqlite3.Connection, venture_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM ventures WHERE id=?", (venture_id,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def get_venture_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
+def get_venture_by_slug(conn: sqlite3.Connection, slug: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM ventures WHERE slug=?", (slug,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def list_ventures(conn: sqlite3.Connection, status: str | None = None) -> list[dict]:
+def list_ventures(conn: sqlite3.Connection, status: str | None = None) -> list[dict[str, Any]]:
     if status is None:
         rows = conn.execute("SELECT * FROM ventures ORDER BY id")
     else:
@@ -107,14 +111,14 @@ def validation_task_title(name: str) -> str:
     return f"[validate] {name}"
 
 
-def find_validation_task(store, name: str) -> dict | None:
+def find_validation_task(store: Store, name: str) -> dict[str, Any] | None:
     for t in store.list_tasks(limit=200):
         if t["title"] == validation_task_title(name):
             return t
     return None
 
 
-def validation_output_clean(task: dict) -> bool:
+def validation_output_clean(task: dict[str, Any]) -> bool:
     """A validation output counts if the task is done and its result file exists
     without the UNVERIFIED banner."""
     path = task.get("result_path")
@@ -166,9 +170,9 @@ DEVILS_ADVOCATE = (
 )
 
 
-def create_venture(store, root, *, name: str, kind: str, hypothesis: str,
+def create_venture(store: Store, root: Path | str, *, name: str, kind: str, hypothesis: str,
                    score: float, evidence_paths: list[str], caller: str,
-                   max_active: int = 3, min_sources: int = 3) -> dict:
+                   max_active: int = 3, min_sources: int = 3) -> dict[str, Any]:
     if kind not in VENTURE_KINDS:
         return {"status": "error", "reason": f"unknown venture kind: {kind}"}
     try:
@@ -195,7 +199,9 @@ def create_venture(store, root, *, name: str, kind: str, hypothesis: str,
                VALUES (?,?,?,?,?,?)""",
             (name, slug, kind, hypothesis, score, json.dumps(evidence)),
         )
-        vid = int(cur.lastrowid)
+        vid = cur.lastrowid
+        assert vid is not None  # INSERT always yields a row id
+        vid = int(vid)
     except sqlite3.IntegrityError:
         return {"status": "error", "reason": "a venture with this name/slug exists"}
     task = store.create_task(
@@ -206,7 +212,7 @@ def create_venture(store, root, *, name: str, kind: str, hypothesis: str,
     return {"status": "created", "venture": venture, "validation_task": task}
 
 
-def _write_death_lesson(root: Path, venture: dict) -> str:
+def _write_death_lesson(root: Path, venture: dict[str, Any]) -> str:
     lessons = Path(root) / "skills" / "lessons"
     lessons.mkdir(parents=True, exist_ok=True)
     path = lessons / f"{venture['id']}-{venture['slug']}.md"
@@ -226,8 +232,8 @@ def _write_death_lesson(root: Path, venture: dict) -> str:
     return str(path)
 
 
-def update_venture(store, root, venture_id: int, status: str,
-                   death_note: str = "") -> dict:
+def update_venture(store: Store, root: Path | str, venture_id: int, status: str,
+                   death_note: str = "") -> dict[str, Any]:
     """Move a venture. Illegal transitions raise ValueError; other problems
     return an error dict."""
     if status not in VENTURE_STATUSES:
@@ -261,6 +267,7 @@ def update_venture(store, root, venture_id: int, status: str,
          venture_id),
     )
     venture = get_venture(store.conn, venture_id)
+    assert venture is not None  # just updated above; the row exists
     lesson_path = ""
     if status == "dead":
         try:
@@ -274,8 +281,8 @@ def update_venture(store, root, venture_id: int, status: str,
     return out
 
 
-def set_external_product(store, root, venture_id: int,
-                           external_product_id: str) -> dict:
+def set_external_product(store: Store, root: Path | str, venture_id: int,
+                           external_product_id: str) -> dict[str, Any]:
     venture = get_venture(store.conn, venture_id)
     if venture is None:
         return {"status": "error", "reason": f"unknown venture id: {venture_id}"}
@@ -286,6 +293,7 @@ def set_external_product(store, root, venture_id: int,
            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?""",
         (external_product_id, venture_id))
     venture = get_venture(store.conn, venture_id)
+    assert venture is not None  # just updated above; the row exists
     if venture["status"] in ("building", "paused"):
         try:
             return update_venture(store, root, venture_id, "live")
@@ -298,7 +306,7 @@ def set_external_product(store, root, venture_id: int,
     return {"status": "ok", "venture": venture}
 
 
-def auto_advance(store, root) -> list[str]:
+def auto_advance(store: Store, root: Path | str) -> list[str]:
     """Move researching ventures with a clean finished validation to validating."""
     events = []
     for venture in list_ventures(store.conn, "researching"):

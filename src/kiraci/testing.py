@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .runner import RunResult
 
@@ -19,7 +20,7 @@ class FakeRunner:
 
     def __init__(
         self,
-        outputs: dict[str, list] | None = None,
+        outputs: dict[str, list[Any]] | None = None,
         *,
         fail_agents: tuple[str, ...] = (),
         timeout_agents: tuple[str, ...] = (),
@@ -36,7 +37,7 @@ class FakeRunner:
         self.timeout_agents = set(timeout_agents)
         self.default = default
         self.on_run = on_run
-        self.calls: list[dict] = []
+        self.calls: list[dict[str, Any]] = []
 
     def run(self, agent: str, prompt: str, cwd: Path, timeout_s: int,
             task_id: int | None = None) -> RunResult:
@@ -58,5 +59,5 @@ class FakeRunner:
             return RunResult(ok=True, text=out, exit_code=0, duration_s=0.1)
         return RunResult(ok=True, text=self.default, exit_code=0, duration_s=0.1)
 
-    def calls_for(self, agent: str) -> list[dict]:
+    def calls_for(self, agent: str) -> list[dict[str, Any]]:
         return [c for c in self.calls if c["agent"] == agent]

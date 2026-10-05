@@ -25,12 +25,17 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from . import heartbeat as heartbeat_mod
+from .config import Config
+from .ledger import Ledger
 from .notify import send_info
+from .store import Store
 from .verify import verify_ledger
 
 PIDFILE = "data/health.pid"
@@ -46,10 +51,6 @@ NOTICE_EVERY_S = 6 * 3600
 #: Pending queue above this only notifies (never auto-drops work).
 BACKLOG_PENDING_N = 50
 
-#: Freshness bar for the daemon heartbeat (falls back to config).
-DEFAULT_STALE_MINUTES = 15
-
-
 @dataclass
 class Finding:
     name: str
@@ -58,28 +59,39 @@ class Finding:
     severity: str = "info"  # info | warn | crit
 
 
+def _spawn_detached(argv: list[str], cwd: str) -> subprocess.Popen[Any]:
+    log = Path(cwd) / "data" / "logs" / "health-spawn.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # Intentionally unclosed: the handle is inherited by the child process.
+    out = log.open("ab")
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": out,
+                              "stderr": subprocess.STDOUT, "cwd": cwd}
+    if os.name == "posix":
+        kwargs["start_new_session"] = True
+    else:  # pragma: no cover - WSL/Linux is the supported host
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0)
+    return subprocess.Popen(argv, **kwargs)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 @dataclass
 class HealthRunner:
     root: Path
-    store: object
-    ledger: object
-    config: object
-    clock: object = None
-    spawn: object = None
-    disk_usage: object = None
-    verify: object = None
-    log: object = field(default=None, repr=False)
+    store: Store
+    ledger: Ledger
+    config: Config
+    clock: Callable[[], datetime] = _utcnow
+    spawn: Callable[[list[str], str], Any] = _spawn_detached
+    disk_usage: Callable[[str], Any] = shutil.disk_usage
+    verify: Callable[[Any], list[str]] = verify_ledger
+    # Logging facade: deliberately loose so tests can pass any stub.
+    log: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
-        if self.clock is None:
-            self.clock = lambda: datetime.now(UTC)
-        if self.spawn is None:
-            self.spawn = _spawn_detached
-        if self.disk_usage is None:
-            self.disk_usage = shutil.disk_usage
-        if self.verify is None:
-            self.verify = verify_ledger
         if self.log is None:
             from .logsetup import get_logger
             self.log = get_logger(self.root)
@@ -105,9 +117,7 @@ class HealthRunner:
         return out
 
     def _check_tick(self, now: datetime) -> Finding:
-        stale_after = float(self.config.ops_value("heartbeat_stale_minutes")
-                            if hasattr(self.config, "ops_value")
-                            else DEFAULT_STALE_MINUTES)
+        stale_after = float(self.config.ops_value("heartbeat_stale_minutes"))
         age = heartbeat_mod.heartbeat_age_minutes(self.store, now)
         if age is None:
             return Finding("tick", False, "no heartbeat recorded", "crit")
@@ -192,8 +202,7 @@ class HealthRunner:
             return []  # already restarted once; wait for its first tick
         try:
             proc = self.spawn(
-                [sys.executable, "-m", "kiraci.cli", "run"],
-                cwd=str(self.root))
+                [sys.executable, "-m", "kiraci.cli", "run"], str(self.root))
             pid = getattr(proc, "pid", "?")
         except OSError as e:
             self.log.error("health: daemon start failed: %s", e)
@@ -224,7 +233,7 @@ class HealthRunner:
         self._notice_once(now, f"pause-{key}", message)
         return [f"paused ({key})"]
 
-    def _stale_running(self, now: datetime) -> list[dict]:
+    def _stale_running(self, now: datetime) -> list[dict[str, Any]]:
         cutoff = now - timedelta(seconds=STALE_RUNNING_S)
         stale = []
         for t in self.store.list_tasks(status="running", limit=200):
@@ -261,13 +270,14 @@ class HealthRunner:
         print(line, flush=True)
         return findings, actions
 
-    def run_forever(self, *, sleep=time.sleep, cycles: int | None = None) -> int:
+    def run_forever(self, *, sleep: Callable[[float], None] = time.sleep,
+                    cycles: int | None = None) -> int:
         if not claim_pidfile(self.root):
             print("health check already running for this root", flush=True)
             return 2
-        stopped = []
+        stopped: list[bool] = []
 
-        def _stop(signum, frame):
+        def _stop(signum: Any, frame: Any) -> None:
             stopped.append(True)
 
         for sig in ("SIGTERM", "SIGINT"):
@@ -275,8 +285,7 @@ class HealthRunner:
                 signal.signal(getattr(signal, sig), _stop)
             except (AttributeError, OSError, ValueError):
                 pass
-        interval = float(self.config.ops_value("health_interval_s")
-                         if hasattr(self.config, "ops_value") else 60)
+        interval = float(self.config.ops_value("health_interval_s"))
         done = 0
         while not stopped:
             try:
@@ -294,7 +303,7 @@ class HealthRunner:
         return 0
 
 
-def _parse_ts(raw) -> datetime | None:
+def _parse_ts(raw: object) -> datetime | None:
     """Parse ledger/store timestamps (ISO, incl. the `Z` UTC suffix)."""
     if not raw or not isinstance(raw, str):
         return None
@@ -324,17 +333,3 @@ def claim_pidfile(root: Path) -> bool:
             return False
     path.write_text(str(os.getpid()), encoding="utf-8")
     return True
-
-
-def _spawn_detached(argv: list[str], cwd: str):
-    log = Path(cwd) / "data" / "logs" / "health-spawn.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    # Intentionally unclosed: the handle is inherited by the child process.
-    out = log.open("ab")
-    kwargs: dict = {"stdin": subprocess.DEVNULL, "stdout": out,
-                    "stderr": subprocess.STDOUT, "cwd": cwd}
-    if os.name == "posix":
-        kwargs["start_new_session"] = True
-    else:  # pragma: no cover - WSL/Linux is the supported host
-        kwargs["creationflags"] = subprocess.DETACHED_PROCESS
-    return subprocess.Popen(argv, **kwargs)

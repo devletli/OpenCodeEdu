@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ledger import Ledger
+    from .store import Store
 
 
-def genesis_ts(conn) -> str | None:
+def genesis_ts(conn: sqlite3.Connection) -> str | None:
     row = conn.execute(
         "SELECT ts FROM ledger WHERE kind='fund' ORDER BY id LIMIT 1").fetchone()
     return row["ts"] if row else None
 
 
-def _burn_per_day(conn, days: int = 7) -> int:
+def _burn_per_day(conn: sqlite3.Connection, days: int = 7) -> int:
     row = conn.execute(
         """SELECT COALESCE(-SUM(delta_cents),0) s FROM ledger
            WHERE kind='expense' AND date(ts) >= date('now', ?)""",
@@ -18,7 +24,7 @@ def _burn_per_day(conn, days: int = 7) -> int:
     return int(row["s"]) // days
 
 
-def _total(conn, kind: str) -> int:
+def _total(conn: sqlite3.Connection, kind: str) -> int:
     row = conn.execute(
         "SELECT COALESCE(SUM(delta_cents),0) s FROM ledger WHERE kind=?",
         (kind,)).fetchone()
@@ -29,7 +35,7 @@ def _eur(cents: int) -> str:
     return f"{cents / 100:.2f}"
 
 
-def build_report(store, ledger, now: datetime) -> str:
+def build_report(store: Store, ledger: Ledger, now: datetime) -> str:
     conn = ledger.conn
     balances = ledger.balances()
     total = ledger.total_balance()
@@ -62,11 +68,11 @@ def build_report(store, ledger, now: datetime) -> str:
            WHERE kind='expense' AND venture_id IS NOT NULL
            GROUP BY venture_id""").fetchall()
     spend_by = {r["venture_id"]: int(r["s"]) for r in spend}
-    income_by = conn.execute(
+    income_rows = conn.execute(
         """SELECT venture_id, COALESCE(SUM(delta_cents),0) s FROM ledger
            WHERE kind IN ('income','refund') AND venture_id IS NOT NULL
            GROUP BY venture_id""").fetchall()
-    income_by = {r["venture_id"]: int(r["s"]) for r in income_by}
+    income_by = {r["venture_id"]: int(r["s"]) for r in income_rows}
     open_h = conn.execute(
         "SELECT COUNT(*) c FROM human_tasks WHERE status='open'").fetchone()["c"]
     closed_h = conn.execute(
@@ -121,7 +127,8 @@ def metrics_filename(now: datetime) -> str:
     return f"metrics-{now.strftime('%Y')}-W{now.strftime('%V')}.md"
 
 
-def write_metrics(store, ledger, root, now: datetime) -> Path:
+def write_metrics(store: Store, ledger: Ledger, root: Path | str,
+                  now: datetime) -> Path:
     out_dir = Path(root) / "data" / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / metrics_filename(now)
@@ -129,13 +136,13 @@ def write_metrics(store, ledger, root, now: datetime) -> Path:
     return path
 
 
-def latest_metrics(root) -> Path | None:
+def latest_metrics(root: Path | str) -> Path | None:
     out_dir = Path(root) / "data" / "outputs"
     files = sorted(out_dir.glob("metrics-*.md"))
     return files[-1] if files else None
 
 
-def metrics_headline(root, max_lines: int = 8) -> str:
+def metrics_headline(root: Path | str, max_lines: int = 8) -> str:
     latest = latest_metrics(root)
     if latest is None:
         return "no metrics report yet"

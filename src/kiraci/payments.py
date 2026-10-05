@@ -28,7 +28,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from .ledger import Ledger
+    from .store import Store
 
 API_BASE = "https://api.lemonsqueezy.com/v1"
 JSONAPI_HEADERS = {
@@ -52,7 +56,8 @@ class Order:
 
 
 class HttpClient(Protocol):
-    def get_json(self, url: str, headers: dict[str, str]) -> dict: ...
+    def get_json(self, url: str, headers: dict[str, str]
+                 ) -> dict[str, Any] | None: ...
 
 
 class UrllibHttpClient:
@@ -61,10 +66,11 @@ class UrllibHttpClient:
     def __init__(self, timeout_s: int = 15):
         self.timeout_s = timeout_s
 
-    def get_json(self, url: str, headers: dict[str, str]) -> dict:
+    def get_json(self, url: str, headers: dict[str, str]) -> dict[str, Any] | None:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+        return data if isinstance(data, dict) else None
 
 
 class PaymentProvider(Protocol):
@@ -98,7 +104,7 @@ class LemonSqueezyProvider:
         return f"{API_BASE}/orders?{urllib.parse.urlencode(params)}"
 
     @staticmethod
-    def _parse_order(item: dict) -> Order | None:
+    def _parse_order(item: dict[str, Any]) -> Order | None:
         try:
             attrs = item["attributes"]
             foi = attrs.get("first_order_item") or {}
@@ -127,6 +133,8 @@ class LemonSqueezyProvider:
         orders: list[Order] = []
         url: str | None = self._first_url()
         for _ in range(MAX_PAGES):
+            if url is None:
+                break
             try:
                 payload = self._http.get_json(url, self._headers())
             except (urllib.error.URLError, OSError, ValueError) as e:
@@ -163,15 +171,18 @@ def _find_venture_id(conn: sqlite3.Connection, product_id: str) -> int | None:
     return int(row["id"]) if row else None
 
 
-def poll(store, ledger, *, provider_name: str, api_key: str, fee_percent: int,
-         fee_fixed: int, provider=None, now: datetime | None = None) -> dict:
+def poll(store: Store, ledger: Ledger, *, provider_name: str, api_key: str,
+         fee_percent: int, fee_fixed: int,
+         provider: PaymentProvider | None = None,
+         now: datetime | None = None) -> dict[str, Any]:
     """Poll once. Returns a summary; never raises for provider failures.
 
     The API key must never appear in any stored text or returned message.
     """
     now = now or datetime.now(UTC)
-    out: dict = {"status": "ok", "fetched": 0, "recorded": 0, "ignored": 0,
-                 "fx_unhandled": 0, "refunds": 0, "skipped_other": 0}
+    out: dict[str, Any] = {"status": "ok", "fetched": 0, "recorded": 0,
+                           "ignored": 0, "fx_unhandled": 0, "refunds": 0,
+                           "skipped_other": 0}
     if not api_key:
         live = store.conn.execute(
             "SELECT COUNT(*) c FROM ventures WHERE status='live'").fetchone()["c"]
@@ -215,8 +226,8 @@ def poll(store, ledger, *, provider_name: str, api_key: str, fee_percent: int,
     return out
 
 
-def _process_order(store, ledger, provider_name: str, order: Order,
-                   fee_percent: int, fee_fixed: int, out: dict) -> None:
+def _process_order(store: Store, ledger: Ledger, provider_name: str, order: Order,
+                   fee_percent: int, fee_fixed: int, out: dict[str, Any]) -> None:
     conn = store.conn
     existing = conn.execute(
         "SELECT * FROM payments WHERE provider=? AND order_id=?",
@@ -283,8 +294,9 @@ def _process_order(store, ledger, provider_name: str, order: Order,
     out["recorded"] += 1
 
 
-def _process_refund_transition(store, ledger, provider_name: str, order: Order,
-                               existing, out: dict) -> None:
+def _process_refund_transition(store: Store, ledger: Ledger, provider_name: str,
+                               order: Order, existing: Any,
+                               out: dict[str, Any]) -> None:
     if order.status != "refunded" or existing["status"] != "recorded":
         return
     recorded = int(existing["recorded_cents"])

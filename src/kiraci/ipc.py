@@ -14,6 +14,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 REQUEST_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
@@ -29,13 +30,16 @@ def ipc_dir() -> Path | None:
     return Path(raw) if raw else None
 
 
-def call(server: str, tool: str, args: dict, *, ipc_path: Path | None = None,
-         timeout_s: float = REQUEST_TIMEOUT_S) -> dict:
-    """Execute one broker call and return its result dict.
+def call(server: str, tool: str, args: dict[str, Any], *,
+         ipc_path: Path | None = None,
+         timeout_s: float = REQUEST_TIMEOUT_S) -> Any:
+    """Execute one broker call and return its JSON-decoded result.
 
     Raises IpcError with a clear message when the broker is unreachable,
-    rejects the call or answers too late. Atomic write (temp file +
-    os.replace), response polled every POLL_INTERVAL_S.
+    rejects the call or answers too late. Callers validate the shape
+    (dict vs list) before returning: MCP output schemas must never receive
+    the wrong JSON type. Atomic write (temp file + os.replace), response
+    polled every POLL_INTERVAL_S.
     """
     root = ipc_path or ipc_dir()
     if root is None:

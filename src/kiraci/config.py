@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field
+from typing import Any
 
 TIER_ENV = {
     "strong": "KIRACI_MODEL_STRONG",
@@ -41,11 +42,12 @@ class Config:
     models: dict[str, str] = field(default_factory=dict)  # agent -> tier
     costs: dict[str, int] = field(default_factory=dict)  # agent -> cents per run
     limits: dict[str, int] = field(default_factory=dict)
-    revenue: dict = field(default_factory=lambda: dict(REVENUE_DEFAULTS))
-    sandbox: dict = field(default_factory=lambda: dict(SANDBOX_DEFAULTS))
-    cost_truth: dict = field(default_factory=lambda: dict(COST_TRUTH_DEFAULTS))
-    backup: dict = field(default_factory=lambda: dict(BACKUP_DEFAULTS))
-    ops: dict = field(default_factory=lambda: dict(OPS_DEFAULTS))
+    revenue: dict[str, Any] = field(default_factory=lambda: dict(REVENUE_DEFAULTS))
+    sandbox: dict[str, Any] = field(default_factory=lambda: dict(SANDBOX_DEFAULTS))
+    cost_truth: dict[str, Any] = field(
+        default_factory=lambda: dict(COST_TRUTH_DEFAULTS))
+    backup: dict[str, Any] = field(default_factory=lambda: dict(BACKUP_DEFAULTS))
+    ops: dict[str, Any] = field(default_factory=lambda: dict(OPS_DEFAULTS))
 
     def tier_for(self, agent: str) -> str | None:
         return self.models.get(agent)
@@ -70,19 +72,19 @@ class Config:
     def cost_for(self, agent: str) -> int:
         return int(self.costs.get(agent, 0))
 
-    def revenue_value(self, key: str):
+    def revenue_value(self, key: str) -> Any:
         return self.revenue.get(key, REVENUE_DEFAULTS.get(key))
 
-    def sandbox_value(self, key: str):
+    def sandbox_value(self, key: str) -> Any:
         return self.sandbox.get(key, SANDBOX_DEFAULTS.get(key))
 
-    def cost_truth_value(self, key: str):
+    def cost_truth_value(self, key: str) -> Any:
         return self.cost_truth.get(key, COST_TRUTH_DEFAULTS.get(key))
 
-    def backup_value(self, key: str):
+    def backup_value(self, key: str) -> Any:
         return self.backup.get(key, BACKUP_DEFAULTS.get(key))
 
-    def ops_value(self, key: str):
+    def ops_value(self, key: str) -> Any:
         return self.ops.get(key, OPS_DEFAULTS.get(key))
 
     def missing_tier_envs(self) -> list[str]:

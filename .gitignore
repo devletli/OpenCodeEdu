@@ -32,3 +32,6 @@ data/outputs/
 
 # Environments
 venv/
+
+# Scratch/debug spillover (claudeTasks Phase 0)
+scratch/

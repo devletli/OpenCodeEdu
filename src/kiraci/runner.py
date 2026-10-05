@@ -25,10 +25,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from . import sandbox as sandbox_mod
-from .config import TIER_ENV
+from .config import TIER_ENV, Config
+from .ledger import Ledger
+from .store import Store
+
+if TYPE_CHECKING:
+    from .broker import BrokerSession
 
 #: Truncation limit for stored run output.
 MAX_OUTPUT_CHARS = 200_000
@@ -68,7 +73,7 @@ def quota_exhausted(text: str) -> bool:
 #: Child environment allowlist. On Windows SYSTEMROOT/USERPROFILE/TEMP/TMP are
 #: also required, otherwise child processes cannot even start. KIRACI_DB is
 #: deliberately absent: agents never see the database.
-_ENV_ALLOW = ("PATH", "HOME", "LANG", "KIRACI_IPC_DIR")
+_ENV_ALLOW: tuple[str, ...] = ("PATH", "HOME", "LANG", "KIRACI_IPC_DIR")
 if os.name == "nt":
     _ENV_ALLOW = _ENV_ALLOW + ("SYSTEMROOT", "USERPROFILE", "TEMP", "TMP")
 
@@ -144,13 +149,13 @@ class OpencodeRunner:
     def __init__(
         self,
         *,
-        ledger,
-        store,
-        config,
+        ledger: Ledger,
+        store: Store,
+        config: Config,
         cmd_builder: Callable[[str, str, str], list[str]] | None = None,
-        sandbox=None,
+        sandbox: Any = None,
         root: Path | None = None,
-    ):
+    ) -> None:
         self.ledger = ledger
         self.store = store
         self.config = config
@@ -200,7 +205,7 @@ class OpencodeRunner:
         self._maybe_reset_fallbacks()
         start = self._fallback_index(tier, len(models))
         ordered = [models[(start + i) % len(models)] for i in range(len(models))]
-        res = None
+        res: RunResult | None = None
         for pos, model in enumerate(ordered):
             res = self._execute(agent, model, prompt, cwd, timeout_s, task_id)
             if res.ok or res.skipped_reason is not None or not quota_exhausted(res.text):
@@ -209,6 +214,7 @@ class OpencodeRunner:
                 return res
             print(f"kiraci: {model} quota-exhausted, trying next model in"
                   f" tier {tier}", file=sys.stderr)
+        assert res is not None  # ordered is non-empty (models checked above)
         return res
 
     def _fallback_index(self, tier: str | None, n: int) -> int:
@@ -280,7 +286,8 @@ class OpencodeRunner:
                         stderr=subprocess.STDOUT, cwd=str(cwd),
                         env=self._child_env(ipc_dir),
                         text=True,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                        creationflags=getattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                     )
             except OSError as e:
                 # A missing/broken binary must fail the run, never kill the
@@ -316,7 +323,7 @@ class OpencodeRunner:
         return RunResult(ok=status == "ok", text=text, exit_code=proc.returncode,
                          duration_s=duration)
 
-    def _start_broker(self, run_id: str, agent: str, ipc_dir: Path):
+    def _start_broker(self, run_id: str, agent: str, ipc_dir: Path) -> BrokerSession:
         """The broker creates its OWN database connection (never shared)."""
         from .broker import BrokerSession
 

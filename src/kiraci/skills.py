@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from .store import find_secret
 
@@ -48,13 +49,13 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2}
 
 
-def select_for_task(root, agent: str, title: str, prompt: str) -> str:
+def select_for_task(root: Path | str, agent: str, title: str, prompt: str) -> str:
     """Pick up to 3 recent matching skills (+ kind-matching lessons), <=6000 chars."""
     words = _words(f"{title} {prompt}")
     picked: list[tuple[str, str]] = []
     total = 0
 
-    def consider(path: Path, front: dict) -> None:
+    def consider(path: Path, front: dict[str, Any]) -> None:
         nonlocal total
         if len(picked) >= MAX_SELECT_FILES:
             return
@@ -130,7 +131,7 @@ def validate_skill(name: str, content: str) -> str | None:
     return None
 
 
-def save_skill(root, name: str, content: str) -> str | None:
+def save_skill(root: Path | str, name: str, content: str) -> str | None:
     """Save a validated skill; never overwrites. Returns error or None."""
     err = validate_skill(name, content)
     if err:

@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 QUEUE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS human_tasks (
@@ -106,6 +107,13 @@ HUMAN_KINDS = (
 )
 
 TASK_STATUSES = ("pending", "running", "blocked", "done", "failed", "rejected", "cancelled")
+
+
+def _rowid(cur: sqlite3.Cursor) -> int:
+    """Row id of a just-executed INSERT (never None; fail loudly if it were)."""
+    row_id = cur.lastrowid
+    assert row_id is not None
+    return int(row_id)
 
 MAX_PENDING_TASKS = 10
 MAX_TITLE_CHARS = 120
@@ -214,7 +222,7 @@ class Store:
         requires_review: bool = False,
         created_by: str,
         not_before: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         if agent == "brain" or agent not in TASK_AGENTS:
             return {
                 "status": "error",
@@ -241,13 +249,13 @@ class Store:
                 (agent, title, prompt, priority, 1 if requires_review else 0,
                  created_by, not_before),
             )
-            return {"status": "created", "task_id": int(cur.lastrowid)}
+            return {"status": "created", "task_id": _rowid(cur)}
 
-    def get_task(self, task_id: int) -> dict | None:
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return dict(row) if row else None
 
-    def list_tasks(self, status: str | None = None, limit: int = 30) -> list[dict]:
+    def list_tasks(self, status: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))
         if status is None:
             rows = self.conn.execute(
@@ -260,7 +268,7 @@ class Store:
             )
         return [dict(r) for r in rows]
 
-    def pending_tasks(self, now_iso: str) -> list[dict]:
+    def pending_tasks(self, now_iso: str) -> list[dict[str, Any]]:
         """Pending tasks whose not_before has passed, lowest priority then oldest first."""
         rows = self.conn.execute(
             """SELECT * FROM tasks WHERE status='pending'
@@ -270,11 +278,11 @@ class Store:
         )
         return [dict(r) for r in rows]
 
-    def next_task(self, now_iso: str) -> dict | None:
+    def next_task(self, now_iso: str) -> dict[str, Any] | None:
         rows = self.pending_tasks(now_iso)
         return rows[0] if rows else None
 
-    def set_status(self, task_id: int, status: str, **fields) -> dict:
+    def set_status(self, task_id: int, status: str, **fields: Any) -> dict[str, Any]:
         if status not in TASK_STATUSES:
             return {"status": "error", "reason": f"unknown task status: {status}"}
         allowed = {
@@ -285,7 +293,7 @@ class Store:
         if unknown:
             return {"status": "error", "reason": f"unknown fields: {sorted(unknown)}"}
         sets = ["status=?", "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"]
-        values: list = [status]
+        values: list[Any] = [status]
         for key in sorted(fields):
             sets.append(f"{key}=?")
             values.append(fields[key])
@@ -304,7 +312,7 @@ class Store:
             out[r["status"]] = int(r["c"])
         return out
 
-    def finished_summaries(self, limit: int = 10) -> list[dict]:
+    def finished_summaries(self, limit: int = 10) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT id, agent, title, status, result_summary FROM tasks
                WHERE status IN ('done','failed','rejected')
@@ -324,7 +332,7 @@ class Store:
         dedupe_key: str,
         created_by: str,
         blocks_task_id: int | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         if kind not in HUMAN_KINDS:
             return {
                 "status": "error",
@@ -384,7 +392,7 @@ class Store:
                    VALUES (?,?,?,?,?,?)""",
                 (kind, title, instructions, url, created_by, dedupe_key),
             )
-            hid = int(cur.lastrowid)
+            hid = _rowid(cur)
             if blocks_task_id is not None:
                 self.conn.execute(
                     """UPDATE tasks SET status='blocked', blocked_on=?,
@@ -396,30 +404,30 @@ class Store:
             ).fetchone()
             return {"status": "created", "task": dict(row)}
 
-    def get_human_task(self, task_id: int) -> dict | None:
+    def get_human_task(self, task_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM human_tasks WHERE id=?", (task_id,)
         ).fetchone()
         return dict(row) if row else None
 
-    def get_human_task_by_key(self, dedupe_key: str) -> dict | None:
+    def get_human_task_by_key(self, dedupe_key: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM human_tasks WHERE dedupe_key=?", (dedupe_key,)
         ).fetchone()
         return dict(row) if row else None
 
-    def list_human_tasks(self, status: str = "open") -> list[dict]:
+    def list_human_tasks(self, status: str = "open") -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM human_tasks WHERE status=? ORDER BY id", (status,)
         )
         return [dict(r) for r in rows]
 
-    def open_human_tasks(self) -> list[dict]:
+    def open_human_tasks(self) -> list[dict[str, Any]]:
         return self.list_human_tasks("open")
 
     def resolve_human_task(
         self, task_id: int, *, status: str = "done", note: str = ""
-    ) -> dict:
+    ) -> dict[str, Any]:
         if status not in ("done", "dismissed"):
             return {"status": "error", "reason": "status must be done or dismissed"}
         with self._tx():
@@ -466,7 +474,7 @@ class Store:
                VALUES (?,?,?,?,?,?,?)""",
             (agent, task_id, model, est_cost_cents, duration_s, exit_code, status),
         )
-        return int(cur.lastrowid)
+        return _rowid(cur)
 
     def start_run(self, *, agent: str, task_id: int | None = None,
                   model: str = "", est_cost_cents: int = 0) -> int:
@@ -476,7 +484,7 @@ class Store:
             " VALUES (?,?,?,?,'running')",
             (agent, task_id, model, est_cost_cents),
         )
-        return int(cur.lastrowid)
+        return _rowid(cur)
 
     def finish_run(self, run_id: int, *, duration_s: float,
                    exit_code: int | None, status: str) -> None:

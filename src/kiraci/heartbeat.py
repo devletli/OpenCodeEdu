@@ -10,9 +10,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .store import Store
 
 
-def last_tick_dt(store) -> datetime | None:
+def last_tick_dt(store: Store) -> datetime | None:
     raw = store.kv_get("last_tick")
     if not raw:
         return None
@@ -26,14 +31,15 @@ def last_tick_dt(store) -> datetime | None:
             return None
 
 
-def heartbeat_age_minutes(store, now: datetime) -> float | None:
+def heartbeat_age_minutes(store: Store, now: datetime) -> float | None:
     ts = last_tick_dt(store)
     if ts is None:
         return None
     return (now - ts).total_seconds() / 60
 
 
-def heartbeat_check(store, root: Path, config, now: datetime | None = None) -> tuple[int, str]:
+def heartbeat_check(store: Store, root: Path, config: Config,
+                    now: datetime | None = None) -> tuple[int, str]:
     """Returns (exit_code, message). Alerts at most once per hour."""
     now = now or datetime.now(UTC)
     root = Path(root)

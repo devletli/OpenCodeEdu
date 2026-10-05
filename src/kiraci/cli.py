@@ -11,6 +11,7 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from . import heartbeat as heartbeat_mod
 from . import ventures
@@ -25,7 +26,7 @@ from .store import Store, find_secret
 from .verify import verify_ledger
 
 
-def cmd_status(ledger: Ledger, store: Store) -> dict:
+def cmd_status(ledger: Ledger, store: Store) -> dict[str, Any]:
     now = datetime.now(UTC)
     text = build_status(store, ledger, now)
     attention = store.conn.execute(
@@ -110,7 +111,7 @@ def _verify_backup_file(path: Path) -> list[str]:
         return ["backup file unreadable"]
 
 
-def cmd_restore(root: Path, backup_file: Path, yes: bool) -> dict:
+def cmd_restore(root: Path, backup_file: Path, yes: bool) -> dict[str, Any]:
     """Human-only restore. Refuses unless KILL exists and heartbeat is stale."""
     if not yes:
         return {"status": "refused", "reason": "add --yes to actually restore"}
@@ -225,7 +226,7 @@ def main() -> None:
         sys.exit(supervise(
             lambda: build_orchestrator(dry_run=args.dry_run).run_forever()))
     if args.cmd == "restore":
-        out = cmd_restore(root, Path(args.file), args.yes)
+        out: Any = cmd_restore(root, Path(args.file), args.yes)
         print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
         if out.get("status") != "restored":
             sys.exit(1)
@@ -321,9 +322,9 @@ def main() -> None:
         runner = HealthRunner(root=root, store=store, ledger=ledger,
                               config=load_config())
         if args.once:
-            findings, _ = runner.cycle()
-            sys.exit(0 if all(f.ok or f.severity != "crit" for f in findings)
-                     else 1)
+            health_findings, _ = runner.cycle()
+            sys.exit(0 if all(f.ok or f.severity != "crit"
+                              for f in health_findings) else 1)
         sys.exit(runner.run_forever())
     elif args.cmd == "verify":
         findings = verify_ledger(conn)

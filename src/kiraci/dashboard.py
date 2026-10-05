@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import os
 import re
 import secrets
 import sqlite3
@@ -24,6 +25,10 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import Config
 
 CACHE_REFRESH_S = 10
 
@@ -85,7 +90,7 @@ class DashboardState:
             return self._cache
 
     # ---------- page data ----------
-    def overview(self) -> dict:
+    def overview(self) -> dict[str, Any]:
         conn = self.conn()
         try:
             kv = {r["key"]: r["value"] for r in conn.execute("SELECT key,value FROM kv")}
@@ -109,7 +114,7 @@ class DashboardState:
         finally:
             conn.close()
 
-    def ledger_rows(self, limit: int = 200) -> list[dict]:
+    def ledger_rows(self, limit: int = 200) -> list[dict[str, Any]]:
         conn = self.conn()
         try:
             return [dict(r) for r in conn.execute(
@@ -118,7 +123,7 @@ class DashboardState:
         finally:
             conn.close()
 
-    def task_rows(self) -> list[dict]:
+    def task_rows(self) -> list[dict[str, Any]]:
         conn = self.conn()
         try:
             return [dict(r) for r in conn.execute(
@@ -128,7 +133,7 @@ class DashboardState:
             conn.close()
 
     # ---------- human inbox (the only writable area) ----------
-    def human_open(self) -> list[dict]:
+    def human_open(self) -> list[dict[str, Any]]:
         conn = self.conn()
         try:
             return [dict(r) for r in conn.execute(
@@ -137,7 +142,7 @@ class DashboardState:
         finally:
             conn.close()
 
-    def human_task(self, task_id: int) -> dict | None:
+    def human_task(self, task_id: int) -> dict[str, Any] | None:
         conn = self.conn()
         try:
             row = conn.execute(
@@ -150,7 +155,7 @@ class DashboardState:
 
     def resolve_human_task(
         self, task_id: int, status: str, note: str = ""
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Resolve/dismiss a human task via a dedicated writable connection.
 
         Only 'done'/'dismissed' are possible here; there is no handler for
@@ -186,7 +191,7 @@ class DashboardState:
                 out.append((p.name, text))
         return out
 
-    def spend_breakdown(self) -> dict:
+    def spend_breakdown(self) -> dict[str, Any]:
         """Where the money went: expenses grouped by bucket and by agent."""
         conn = self.conn()
         try:
@@ -200,7 +205,7 @@ class DashboardState:
         finally:
             conn.close()
 
-    def agent_activity(self) -> list[dict]:
+    def agent_activity(self) -> list[dict[str, Any]]:
         """Every agent: total spend, recent runs, tasks and their outcomes."""
         conn = self.conn()
         try:
@@ -236,11 +241,11 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
             else "<p><em>empty</em></p>")
 
 
-def esc(value) -> str:
+def esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-def render_overview(data: dict) -> str:
+def render_overview(data: dict[str, Any]) -> str:
     balances = " ".join(f"{k}: {v / 100:.2f}" for k, v in sorted(data["balances"].items()))
     total = sum(v for k, v in data["balances"].items() if k != "owner")
     kv = data["kv"]
@@ -284,7 +289,7 @@ def render_overview(data: dict) -> str:
     return "\n".join(out)
 
 
-def render_human_list(tasks: list[dict]) -> str:
+def render_human_list(tasks: list[dict[str, Any]]) -> str:
     rows = "".join(
         f"<tr><td>{esc(t['id'])}</td><td>{esc(t['kind'])}</td>"
         f"<td><a href='/human/{esc(t['id'])}'>{esc(t['title'])}</a></td>"
@@ -295,7 +300,7 @@ def render_human_list(tasks: list[dict]) -> str:
     return "<h1>Human inbox</h1>" + table
 
 
-def render_human_confirm(task: dict, csrf_token: str) -> str:
+def render_human_confirm(task: dict[str, Any], csrf_token: str) -> str:
     tid = esc(task["id"])
     form = (f"<form method='post' action='/human/{tid}/done'>"
             f"<input type='hidden' name='csrf' value='{esc(csrf_token)}'>"
@@ -320,7 +325,7 @@ def render_human_confirm(task: dict, csrf_token: str) -> str:
     ]))
 
 
-def render_agents(data: list[dict]) -> str:
+def render_agents(data: list[dict[str, Any]]) -> str:
     out = ["<h1>Agents - what they did</h1>"]
     for a in data:
         spent = esc(f"{a['spend_cents'] / 100:.2f}")
@@ -473,7 +478,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
-    def log_message(self, fmt: str, *args) -> None:  # quiet: no stdout spam
+    def log_message(self, fmt: str, *args: Any) -> None:  # quiet: no stdout spam
         pass
 
 
@@ -490,15 +495,13 @@ def resolve_db_path(root: Path) -> str:
     <root>/data/kiraci.db. This keeps the GUI and the CLI on the same
     database instead of silently diverging.
     """
-    import os
-
     override = os.environ.get("KIRACI_DB")
     if override:
         return str(Path(override))
     return str(Path(root).resolve() / "data" / "kiraci.db")
 
 
-def serve(root: Path, config) -> None:
+def serve(root: Path, config: Config) -> None:
     port = int(config.ops_value("dashboard_port"))
     db_path = resolve_db_path(root)
     srv = make_server(DashboardState(db_path, root), port)

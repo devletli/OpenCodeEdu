@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daemon_snapshots (
@@ -41,7 +42,7 @@ def init_db(db_path: Path | str | None = None) -> Path:
 
 def save_snapshot(
     module: str,
-    payload: dict,
+    payload: dict[str, Any],
     db_path: Path | str | None = None,
 ) -> int:
     """Persist one snapshot record. Returns the row id."""
@@ -54,13 +55,15 @@ def save_snapshot(
             (module, json.dumps(payload, ensure_ascii=False)),
         )
         conn.commit()
-        return int(cur.lastrowid)
+        row_id = cur.lastrowid
+        assert row_id is not None  # INSERT always yields a row id
+        return int(row_id)
 
 
 def list_snapshots(
     limit: int = 50,
     db_path: Path | str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Most recent snapshot records, newest first."""
     path = init_db(db_path)
     limit = max(1, min(limit, 500))

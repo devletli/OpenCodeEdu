@@ -9,8 +9,10 @@ import signal
 import sqlite3
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from . import builder_flow, product_check, usage, ventures
 from . import metrics as metrics_mod
@@ -18,12 +20,14 @@ from . import payments as payments_mod
 from . import sandbox as sandbox_mod
 from . import skills as skills_mod
 from .backup import run_backup
-from .config import load_config
+from .config import Config, load_config
 from .db import connect
 from .ledger import Ledger
 from .logsetup import get_logger
 from .notify import maybe_send_digest, notify_human, send_info
 from .review import review_approvals
+from .runner import Runner
+from .sandbox import Sandbox
 from .store import ORCHESTRATOR, Store, utcnow_iso
 from .testing import FakeRunner
 from .verify import verify_ledger
@@ -120,7 +124,7 @@ def slugify(title: str) -> str:
     return slug or "task"
 
 
-def genesis_age_days(conn, now: datetime) -> int | None:
+def genesis_age_days(conn: sqlite3.Connection, now: datetime) -> int | None:
     """Days since the first fund entry (the day-90 clock). None if no genesis."""
     ts = metrics_mod.genesis_ts(conn)
     if ts is None:
@@ -166,8 +170,10 @@ def build_status(store: Store, ledger: Ledger, now: datetime) -> str:
 
 
 class Orchestrator:
-    def __init__(self, *, root, store, ledger, config, runner, clock=None,
-                 sandbox=None):
+    def __init__(self, *, root: Path | str, store: Store, ledger: Ledger,
+                 config: Config, runner: Runner,
+                 clock: Callable[[], datetime] | None = None,
+                 sandbox: Sandbox | None = None) -> None:
         self.root = Path(root)
         self.store = store
         self.ledger = ledger
@@ -486,7 +492,7 @@ class Orchestrator:
         return "day90 review written"
 
     def _git_snapshot(self, now: datetime) -> str:
-        def git(*args):
+        def git(*args: str) -> subprocess.CompletedProcess[str]:
             env = dict(os.environ)
             env["GIT_CONFIG_NOSYSTEM"] = "1"
             return subprocess.run(
@@ -602,7 +608,7 @@ class Orchestrator:
         except ValueError:
             return False
 
-    def _write_result(self, task: dict, text: str, now: datetime) -> str:
+    def _write_result(self, task: dict[str, Any], text: str, now: datetime) -> str:
         day = now.strftime("%Y-%m-%d")
         slug = slugify(task["title"])
         agent = task["agent"]
@@ -631,7 +637,7 @@ class Orchestrator:
             return ""
         return str(path)
 
-    def _run_task(self, task: dict, now: datetime, survival: bool) -> str:
+    def _run_task(self, task: dict[str, Any], now: datetime, survival: bool) -> str:
         from .store import tomorrow_0005
 
         tid = task["id"]
@@ -703,7 +709,7 @@ class Orchestrator:
         self._note_outcome(True, now)
         return f"task #{tid} done{ingested}"
 
-    def _scout_evidence(self, task: dict, text: str) -> tuple[str, bool]:
+    def _scout_evidence(self, task: dict[str, Any], text: str) -> tuple[str, bool]:
         """Banner outputs with too few sources; queue at most one re-run."""
         need = int(self.config.revenue_value("min_sources_per_research"))
         if len(ventures.find_urls(text)) >= need:
@@ -941,7 +947,7 @@ class Orchestrator:
 
     # ---------- daemon ----------
     def run_forever(self) -> int:
-        def _stop(signum, frame):
+        def _stop(signum: Any, frame: Any) -> None:
             self.stopped = True
 
         for sig in ("SIGTERM", "SIGINT"):
@@ -965,7 +971,8 @@ BACKOFF_FIRST_S = 5.0
 BACKOFF_MAX_S = 300.0
 
 
-def supervise(build_run, sleep=time.sleep, max_restarts=None) -> int:
+def supervise(build_run: Callable[[], int], sleep: Callable[[float], None] = time.sleep,
+              max_restarts: int | None = None) -> int:
     """Run build_run() until it exits 0, restarting crashes with backoff.
 
     build_run() must build a FRESH orchestrator (fresh DB connection) on
@@ -994,7 +1001,7 @@ def supervise(build_run, sleep=time.sleep, max_restarts=None) -> int:
         delay = min(delay * 2, BACKOFF_MAX_S)
 
 
-def build_orchestrator(*, dry_run: bool = False):
+def build_orchestrator(*, dry_run: bool = False) -> Orchestrator:
     from .runner import OpencodeRunner
 
     root = Path.cwd().resolve()
@@ -1004,6 +1011,7 @@ def build_orchestrator(*, dry_run: bool = False):
     store = Store(conn)
     ledger = Ledger(conn)
     config = load_config()
+    runner: Runner
     if dry_run:
         # No opencode, no spending, no sandbox: FakeRunner does nothing real.
         runner = FakeRunner(default="dry-run placeholder: no opencode, no spending")

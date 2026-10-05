@@ -19,6 +19,10 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import Config
 
 DEFAULT_PATH_ENV = "/usr/local/bin:/usr/bin:/bin"
 
@@ -92,7 +96,7 @@ def _mirror_rel(src: Path) -> Path:
 class Sandbox:
     """Status probing and per-run directory preparation."""
 
-    def __init__(self, *, config, root: Path):
+    def __init__(self, *, config: Config, root: Path) -> None:
         self.config = config
         self.root = Path(root)
         self._probe_result: tuple[float, str] | None = None

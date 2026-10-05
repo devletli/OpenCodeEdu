@@ -15,8 +15,12 @@ import shutil
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .verify import verify_ledger
+
+if TYPE_CHECKING:
+    from .config import Config
 
 
 def _verify_copy(path: Path) -> list[str]:
@@ -55,8 +59,8 @@ def _rotate(directory: Path, *, keep_daily: int, keep_weekly: int) -> list[str]:
     return removed
 
 
-def run_backup(conn: sqlite3.Connection, root: Path, config, *,
-               now: datetime | None = None) -> dict:
+def run_backup(conn: sqlite3.Connection, root: Path, config: Config, *,
+               now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     backup_dir = Path(root) / "data" / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)

@@ -3,12 +3,19 @@ from __future__ import annotations
 import re
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .ledger import Ledger
+    from .store import Store
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _executed_yellow_today_cents(ledger) -> int:
+def _executed_yellow_today_cents(ledger: Ledger) -> int:
     row = ledger.conn.execute(
         """SELECT COALESCE(SUM(amount_cents),0) s FROM approvals
            WHERE tier='yellow' AND status='executed'
@@ -17,7 +24,7 @@ def _executed_yellow_today_cents(ledger) -> int:
     return int(row["s"])
 
 
-def _approval_status(ledger, approval_id: int) -> str | None:
+def _approval_status(ledger: Ledger, approval_id: int) -> str | None:
     row = ledger.conn.execute(
         "SELECT status FROM approvals WHERE id=?", (approval_id,)
     ).fetchone()
@@ -43,17 +50,17 @@ def _judge_verdict(text: str) -> str:
 
 def review_approvals(
     *,
-    store,
-    ledger,
-    runner,
-    config,
-    balances: dict,
+    store: Store,
+    ledger: Ledger,
+    runner: Any,
+    config: Config,
+    balances: dict[str, Any],
     runway_str: str,
     judge_enabled: bool,
     repo_root: Path,
     timeout_s: int,
-    notify_fn=None,
-) -> dict:
+    notify_fn: Callable[[dict[str, Any]], Any] | None = None,
+) -> dict[str, Any]:
     """Review pending approvals. Yellow via the judge agent, red via Human Inbox.
 
     Returns counts: yellow_accepted/rejected/deferred, red_filed, red_closed.

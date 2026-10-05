@@ -5,10 +5,15 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from . import guard
 from .review import _judge_verdict
 from .store import tomorrow_0005
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .store import Store
 
 BUILDER_RULES = (
     "Rules for this task: write changes ONLY under these prefixes: "
@@ -24,7 +29,7 @@ BUILDER_RULES = (
 _merge_lock = threading.Lock()
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     # The orchestrator is the only component that runs git commands that
     # write: hooks and system config are always neutralized.
     env = dict(os.environ)
@@ -42,7 +47,8 @@ def _remove_worktree(repo_root: Path, wt: Path, branch: str) -> None:
 
 
 def run_builder_task(
-    *, task_id: int, store, runner, config, repo_root: Path, now: datetime,
+    *, task_id: int, store: Store, runner: Any, config: Config, repo_root: Path,
+    now: datetime,
 ) -> str:
     """Run the builder flow for a task.
 
@@ -76,10 +82,10 @@ def run_builder_task(
                              result_summary=summary)
         return "failed"
 
-    base = _git(["rev-parse", "HEAD"], repo_root)
-    if base.returncode != 0:
+    base_proc = _git(["rev-parse", "HEAD"], repo_root)
+    if base_proc.returncode != 0:
         return fail("no git HEAD in main checkout")
-    base = base.stdout.strip()
+    base = base_proc.stdout.strip()
     _git(["worktree", "remove", "--force", str(wt)], repo_root)
     _git(["branch", "-D", branch], repo_root)
     add = _git(["worktree", "add", "-b", branch, str(wt), "HEAD"], repo_root)
