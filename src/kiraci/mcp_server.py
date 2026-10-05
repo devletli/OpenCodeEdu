@@ -54,16 +54,23 @@ def request_spend(agent: str | None = None, bucket: str = "", amount_eur: float 
 
 
 @mcp.tool()
-@_guard
 def list_pending() -> list[dict]:
-    """List spend requests that are waiting for human approval."""
+    """List spend requests that are waiting for human approval.
+
+    No _guard here by design: on IPC failure the IpcError propagates and
+    FastMCP returns a proper retryable tool error. An error *dict* would
+    violate the list output schema (seen live with list_ventures).
+    """
     return call("ledger", "list_pending", {})
 
 
 @mcp.tool()
-@_guard
 def recent_entries(limit: int = 20) -> list[dict]:
-    """Most recent ledger entries (amounts in cents, newest first)."""
+    """Most recent ledger entries (amounts in cents, newest first).
+
+    No _guard here by design (see list_pending): IpcError must propagate
+    so the list output schema is never violated by an error dict.
+    """
     return call("ledger", "recent_entries", {"limit": limit})
 
 

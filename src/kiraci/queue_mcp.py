@@ -44,9 +44,13 @@ def create_task(agent: str, title: str, prompt: str, caller: str | None = None,
 
 
 @mcp.tool()
-@_guard
 def list_tasks(status: str | None = None, limit: int = 30) -> list[dict]:
-    """List queued tasks, newest first."""
+    """List queued tasks, newest first.
+
+    No _guard here by design: on IPC failure the IpcError propagates and
+    FastMCP returns a proper retryable tool error. An error *dict* would
+    violate the list output schema (seen live with list_ventures).
+    """
     return call("queue", "list_tasks", {"status": status, "limit": limit})
 
 
@@ -65,9 +69,12 @@ def request_human_action(kind: str, title: str, instructions: str, dedupe_key: s
 
 
 @mcp.tool()
-@_guard
 def list_human_tasks(status: str = "open") -> list[dict]:
-    """List human inbox tasks (open by default)."""
+    """List human inbox tasks (open by default).
+
+    No _guard here by design (see list_tasks): IpcError must propagate
+    so the list output schema is never violated by an error dict.
+    """
     return call("queue", "list_human_tasks", {"status": status})
 
 
@@ -97,9 +104,12 @@ def update_venture(venture_id: int, status: str, caller: str | None = None,
 
 
 @mcp.tool()
-@_guard
 def list_ventures(status: str | None = None) -> list[dict]:
-    """List ventures, optionally filtered by status."""
+    """List ventures, optionally filtered by status.
+
+    No _guard here by design (see list_tasks): IpcError must propagate
+    so the list output schema is never violated by an error dict.
+    """
     return call("queue", "list_ventures", {"status": status})
 
 

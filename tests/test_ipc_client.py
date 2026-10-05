@@ -133,3 +133,22 @@ def test_guard_returns_error_dict_on_ipc_error(monkeypatch):
     monkeypatch.setattr(mcp_server, "call", boom)
     out = mcp_server.get_balances()
     assert out == {"status": "error", "reason": "broker did not answer x"}
+
+
+def test_list_tools_reraise_ipc_error(monkeypatch):
+    """List-typed tools must never return an error dict: it violates their
+    MCP output schema (seen live: list_ventures returned {'status': ...}
+    and FastMCP raised a validation error). IpcError propagates instead,
+    which FastMCP turns into a proper retryable tool error."""
+    from kiraci import ipc, mcp_server, queue_mcp
+
+    def boom(server, tool, args, **kwargs):
+        raise ipc.IpcError("broker did not answer x")
+
+    monkeypatch.setattr(mcp_server, "call", boom)
+    monkeypatch.setattr(queue_mcp, "call", boom)
+    for fn in (mcp_server.list_pending, mcp_server.recent_entries,
+               queue_mcp.list_tasks, queue_mcp.list_human_tasks,
+               queue_mcp.list_ventures):
+        with pytest.raises(ipc.IpcError, match="did not answer"):
+            fn()
