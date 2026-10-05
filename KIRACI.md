@@ -402,3 +402,18 @@ all logs in SQLite.
 6. **Residual risk is accepted and bounded outside the software:** the model-provider key
    is a dedicated key with a provider-side spending limit, and egress is not restricted.
 7. **Observability is read-only.** The dashboard is loopback-only and cannot change anything.
+
+---
+
+## 18. Dashboard Human-Inbox Actions (owner-authorized)
+
+1. The loopback-only dashboard may resolve or dismiss Human Inbox tasks
+   (`done`/`dismiss`) and nothing else. Approvals, spending, task creation,
+   ventures, payments and restore stay CLI-only and have no dashboard handler.
+2. Every state change is a POST to `/human/<id>/done|dismiss` carrying a
+   per-process CSRF token rendered into a confirm page; GET never mutates.
+   Missing or invalid tokens are rejected.
+3. Notes pass the same secret detector as the CLI; secret-looking notes are
+   refused and the task stays open.
+4. Section 17.7 is extended accordingly: observability stays read-only except
+   this one inbox action.
