@@ -2,21 +2,17 @@
 .venv-wsl/
 __pycache__/
 *.egg-info/
-data/*.db
-data/*.db-*
 .pytest_cache/
 .ruff_cache/
 .env
-data/
-data/ipc/
-data/sandbox/
-data/backups/
-data/logs/
-workspace/
-HUMAN_INBOX.md
-data/outputs/
 
-# Dynamic Runtime Data & Agent Artifacts (TASK2.md Phase 1.1)
+# Data directory (everything in data/ is ignored)
+data/
+
+# Scratch/debug spillover (claudeTasks Phase 0)
+scratch/
+
+# Dynamic Runtime Data & Agent Artifacts (kept in repo with .gitkeep)
 /journal/*
 !/journal/.gitkeep
 /research/*
@@ -25,13 +21,23 @@ data/outputs/
 !/products/.gitkeep
 /scripts/outputs/*
 
-# Local Storage & Databases
-*.db
-*.sqlite3
-*.log
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-# Environments
-venv/
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+.wheel/
 
-# Scratch/debug spillover (claudeTasks Phase 0)
-scratch/
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

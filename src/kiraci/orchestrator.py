@@ -761,6 +761,9 @@ class Orchestrator:
         paused = self._dispatch_paused(now)
         if paused:
             events.append("llm-paused")
+        frozen = self.store.is_frozen()
+        if frozen:
+            events.append("frozen: llm blocked")
 
         if in_awake_hours(now):
             balances = self.ledger.balances()
@@ -770,7 +773,7 @@ class Orchestrator:
                 store=self.store, ledger=self.ledger, runner=self.runner,
                 config=self.config, balances=balances,
                 runway_str=runway_str(total, burn),
-                judge_enabled=not paused and not survival,
+                judge_enabled=not paused and not survival and not frozen,
                 repo_root=self.root,
                 timeout_s=int(self.config.limits.get("run_timeout_seconds", 1200)),
                 notify_fn=lambda t: notify_human(t, root=self.root, store=self.store),
@@ -785,14 +788,15 @@ class Orchestrator:
             if poll_ev:
                 events.append(poll_ev)
 
-            jobs = self._run_jobs(now, paused, survival)
+            jobs = self._run_jobs(now, paused, survival, frozen)
             events.extend(jobs)
 
-            if not paused and not in_night(now):
+            if not paused and not frozen and not in_night(now):
                 events.append(self._dispatch(now, survival))
             else:
                 events.append("dispatch:none (night)" if in_night(now)
-                              else "dispatch:none (paused)")
+                              else "dispatch:none (paused)" if paused
+                              else "dispatch:none (frozen)")
         else:
             events.append("night: watchdog only")
             poll_ev = self._maybe_poll(now)
@@ -874,7 +878,7 @@ class Orchestrator:
             return f"backup: {res.get('status')}"
         return f"backup: {res['path']}"
 
-    def _run_jobs(self, now: datetime, paused: bool, survival: bool) -> list[str]:
+    def _run_jobs(self, now: datetime, paused: bool, survival: bool, frozen: bool = False) -> list[str]:
         events: list[str] = []
         if self._job_due("morning_report", "06:00", now):
             events.append(self._queue_helper_task(
@@ -885,15 +889,15 @@ class Orchestrator:
                 + metrics_line(self.root)))
             self._mark_job("morning_report", now)
         if self._job_due("morning_plan", "06:30", now):
-            if paused or survival:
-                events.append("morning_plan skipped (paused/survival)")
+            if paused or survival or frozen:
+                events.append("morning_plan skipped (paused/survival/frozen)")
             else:
                 msg, _ = self._brain_session("morning_plan", now)
                 events.append(msg)
             self._mark_job("morning_plan", now)
         if self._job_due("midday_review", "12:00", now):
-            if paused or survival:
-                events.append("midday_review skipped (paused/survival)")
+            if paused or survival or frozen:
+                events.append("midday_review skipped (paused/survival/frozen)")
             else:
                 msg, _ = self._brain_session("midday_review", now)
                 events.append(msg)
@@ -923,8 +927,8 @@ class Orchestrator:
                 "into skill proposals. Output zero to three new skills, each as a "
                 "block starting with a line `SKILL: <kebab-name>` followed by the "
                 "markdown file content (with front matter: title, agents, tags)."))
-            if paused or survival:
-                events.append("weekly brain skipped (paused/survival)")
+            if paused or survival or frozen:
+                events.append("weekly brain skipped (paused/survival/frozen)")
             else:
                 msg, _ = self._brain_session("weekly_retro", now)
                 events.append(msg)

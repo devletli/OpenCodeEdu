@@ -34,7 +34,7 @@ def _op():
         st.tuples(st.just("approve"), st.integers(0, 5)),
         st.tuples(st.just("reject"), st.integers(0, 5)),
         st.tuples(st.just("income"), st.integers(1, 5000),
-                  st.integers(0, 1000)),
+                  st.integers(0, 10_000_000)),
     )
 
 
@@ -75,6 +75,9 @@ def test_properties_hold_over_random_sequences(ops):
     ledger = fresh()
     expected = 10_000  # genesis total across all buckets
     for op in ops:
+        # handle income refnums specially to avoid duplicates
+        if op[0] == "income":
+            op = (op[0], op[1], f"hyp_{op[2]}_{id(op)}")
         expected = _apply(ledger, expected, op)
         assert ledger.spent_today("tokens") <= CAP
     balances = ledger.balances()
