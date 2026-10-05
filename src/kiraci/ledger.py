@@ -91,6 +91,10 @@ class Ledger:
     def balances(self) -> dict[str, int]:
         return self._balances()
 
+    def spent_today(self, bucket: str) -> int:
+        """Expense cents booked to a bucket today (UTC). Read-only."""
+        return self._spent_today(bucket)
+
     def total_balance(self) -> int:
         return sum(v for k, v in self._balances().items() if k != "owner")
 

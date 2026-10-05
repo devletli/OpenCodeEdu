@@ -45,6 +45,9 @@ def cmd_status(ledger: Ledger, store: Store) -> dict:
         "last_tick": store.kv_get("last_tick", "never"),
         "ventures": ventures.list_ventures(store.conn),
         "payments_needing_attention": [dict(r) for r in attention],
+        "tokens_spent_today_cents": ledger.spent_today("tokens"),
+        "spend_today_by_bucket_cents": {
+            b: ledger.spent_today(b) for b in ledger.balances()},
         "metrics_headline": metrics_headline(root),
         "sandbox_status": sandbox.status(),
         "cost_multiplier": store.kv_get("cost_multiplier", "1.0"),
@@ -195,6 +198,11 @@ def main() -> None:
     sub.add_parser("kill", help="stop the daemon after this tick")
     sub.add_parser("resume", help="clear KILL and PAUSE files")
     sub.add_parser("pause", help="pause dispatch")
+    rn = sub.add_parser("run", help="start the orchestrator (restarts crashes)")
+    rn.add_argument("--dry-run", action="store_true",
+                    help="fake runner: no opencode, no spending")
+    rn.add_argument("--once", action="store_true",
+                    help="run a single tick and exit (no supervision)")
     sub.add_parser("verify", help="run the ledger integrity checks")
     sub.add_parser("backup", help="run a backup now")
     sub.add_parser("heartbeat-check", help="alert (once/hour) when the daemon is stale")
@@ -204,6 +212,15 @@ def main() -> None:
     args = p.parse_args()
 
     root = Path.cwd()
+    if args.cmd == "run":
+        from .orchestrator import build_orchestrator, supervise
+
+        if args.once:
+            orch = build_orchestrator(dry_run=args.dry_run)
+            print(orch.tick(), flush=True)
+            return
+        sys.exit(supervise(
+            lambda: build_orchestrator(dry_run=args.dry_run).run_forever()))
     if args.cmd == "restore":
         out = cmd_restore(root, Path(args.file), args.yes)
         print(json.dumps(out, ensure_ascii=False, indent=2, default=str))

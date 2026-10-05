@@ -150,11 +150,15 @@ def build_status(store: Store, ledger: Ledger, now: datetime) -> str:
     open_human = store.open_human_tasks()
     pending = ledger.pending()
     last_tick = store.kv_get("last_tick", "never")
+    tokens_today = ledger.spent_today("tokens")
+    tokens_cap = ledger.policy.daily_caps_cents.get("tokens", 60)
     lines = [
         f"Date: {now.strftime('%Y-%m-%d %H:%M UTC')}  Phase: {current_phase(now)}",
         f"Balances (EUR): {{{', '.join(f'{k}: {v / 100:.2f}' for k, v in balances.items())}}}",
         (f"Total (ex-owner): EUR {total / 100:.2f}  "
          f"Burn (7d avg): EUR {burn / 100:.2f}/day  Runway: {runway_str(total, burn)}"),
+        (f"Tokens today: EUR {tokens_today / 100:.2f} "
+         f"(cap EUR {tokens_cap / 100:.2f})"),
         f"Open human tasks: {len(open_human)}  Pending approvals: {len(pending)}",
         f"Tasks by status: {counts}  Last tick: {last_tick}",
     ]
@@ -923,6 +927,42 @@ class Orchestrator:
                 break
             time.sleep(tick_s)
         return 0
+
+
+#: Crash-restart backoff for `kiraci run`: first retry after 5 s, doubling
+#: to a 300 s cap. Only nonzero exits and uncaught exceptions restart;
+#: exit code 0 (the KILL-file stop) always stays stopped.
+BACKOFF_FIRST_S = 5.0
+BACKOFF_MAX_S = 300.0
+
+
+def supervise(build_run, sleep=time.sleep, max_restarts=None) -> int:
+    """Run build_run() until it exits 0, restarting crashes with backoff.
+
+    build_run() must build a FRESH orchestrator (fresh DB connection) on
+    every call: a crash may have left the previous connection unusable.
+    max_restarts bounds retries for tests; production passes None (forever).
+    """
+    delay = BACKOFF_FIRST_S
+    restarts = 0
+    log = get_logger(Path.cwd())
+    while True:
+        try:
+            code = build_run()
+        except Exception as e:  # noqa: BLE001 - supervisor must survive anything
+            log.error("orchestrator crashed: %s", e)
+            code = 1
+        if code == 0:
+            return 0
+        restarts += 1
+        if max_restarts is not None and restarts > max_restarts:
+            return code
+        # NOTE: f-string, not %-args: the secret-redaction filter
+        # stringifies all log args, which breaks numeric %-formats.
+        log.warning(f"orchestrator exited {code}; restarting in "
+                    f"{delay:.0f}s (restart #{restarts})")
+        sleep(delay)
+        delay = min(delay * 2, BACKOFF_MAX_S)
 
 
 def build_orchestrator(*, dry_run: bool = False):
