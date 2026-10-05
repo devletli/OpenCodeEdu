@@ -32,7 +32,8 @@ COST_TRUTH_DEFAULTS = {
 
 BACKUP_DEFAULTS = {"keep_daily": 14, "keep_weekly": 8, "time_utc": "22:30"}
 
-OPS_DEFAULTS = {"heartbeat_stale_minutes": 15, "dashboard_port": 8787}
+OPS_DEFAULTS = {"heartbeat_stale_minutes": 15, "dashboard_port": 8787,
+                "health_interval_s": 60}
 
 
 @dataclass(frozen=True)

@@ -36,11 +36,17 @@ def make_session(wired, agent, *, root=None):
 
 
 def send_and_wait(session, server, tool, args, timeout=5.0):
+    # Atomic write (temp file + rename), exactly like the real IPC client:
+    # the broker polls every 100 ms and must never see a partial file.
+    # A plain write_text raced the poller under load ("not valid JSON").
     name = f"{temp_counter[0]}.json"
     temp_counter[0] += 1
-    (session.ipc_dir / "requests" / name).write_text(
+    target = session.ipc_dir / "requests" / name
+    tmp = target.with_name(f"{name}.{os.getpid()}.tmp")
+    tmp.write_text(
         json.dumps({"server": server, "tool": tool, "args": args}),
         encoding="utf-8")
+    os.replace(tmp, target)
     resp = session.ipc_dir / "responses" / name
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

@@ -203,6 +203,9 @@ def main() -> None:
                     help="fake runner: no opencode, no spending")
     rn.add_argument("--once", action="store_true",
                     help="run a single tick and exit (no supervision)")
+    hl = sub.add_parser("health", help="health watchdog (recovery scenarios)")
+    hl.add_argument("--once", action="store_true",
+                    help="single check+recover cycle, then exit")
     sub.add_parser("verify", help="run the ledger integrity checks")
     sub.add_parser("backup", help="run a backup now")
     sub.add_parser("heartbeat-check", help="alert (once/hour) when the daemon is stale")
@@ -312,6 +315,16 @@ def main() -> None:
         (root / "data" / "KILL").unlink(missing_ok=True)
         (root / "data" / "PAUSE").unlink(missing_ok=True)
         out = {"status": "ok", "detail": "KILL and PAUSE cleared"}
+    elif args.cmd == "health":
+        from .health import HealthRunner
+
+        runner = HealthRunner(root=root, store=store, ledger=ledger,
+                              config=load_config())
+        if args.once:
+            findings, _ = runner.cycle()
+            sys.exit(0 if all(f.ok or f.severity != "crit" for f in findings)
+                     else 1)
+        sys.exit(runner.run_forever())
     elif args.cmd == "verify":
         findings = verify_ledger(conn)
         out = {"status": "healthy" if not findings else "findings",
