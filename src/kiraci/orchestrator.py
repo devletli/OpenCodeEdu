@@ -212,6 +212,34 @@ class Orchestrator:
                     notify_human(result["task"], root=self.root, store=self.store)
                 except (OSError, sqlite3.Error) as e:
                     self.log.warning("startup notify failed: %s", e)
+        resumed = self._resume_interrupted()
+        if resumed:
+            self.log.warning(f"resumed {resumed} interrupted task(s) to pending")
+
+    def _resume_interrupted(self) -> int:
+        """Restart recovery: tasks left `running` never had their run finish
+        (the daemon died mid-task, e.g. a WSL reboot). Send them back to
+        `pending` with attempts+1 so the attempts guard stays honest and the
+        next ticks pick them up. `blocked` tasks keep waiting on the human."""
+        n = 0
+        for t in self.store.list_tasks(status="running", limit=200):
+            self.store.set_status(
+                t["id"], "pending",
+                attempts=int(t.get("attempts", 0)) + 1,
+                result_summary="interrupted by restart; requeued")
+            n += 1
+        return n
+
+    def _apply_survival_mode(self, survival: bool) -> None:
+        """Point runners at the cheapest model tier in survival mode.
+
+        Runners without the flag (e.g. FakeRunner) are left alone. The
+        ledger spend gate and the cost-0 dispatch filter are unchanged:
+        this only changes WHICH model a dispatched run uses.
+        """
+        runner = self.runner
+        if hasattr(runner, "survival_mode"):
+            runner.survival_mode = survival
 
     # ---------- jobs ----------
     def _job_due(self, name: str, hhmm: str, now: datetime, weekday: int | None = None) -> bool:
@@ -710,6 +738,7 @@ class Orchestrator:
                 self.log.warning("digest failed: %s", e)
             return f"{iso} phase={current_phase(now)} " + " ".join(events)
         survival = self.ledger.total_balance() < SURVIVAL_TOTAL_CENTS
+        self._apply_survival_mode(survival)
         if survival:
             events.append("SURVIVAL")
 

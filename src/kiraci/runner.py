@@ -145,6 +145,10 @@ class OpencodeRunner:
         self.root = Path(root).resolve() if root else Path.cwd().resolve()
         kiracidb = os.environ.get("KIRACI_DB", "data/kiraci.db")
         self.kiracidb = os.path.abspath(kiracidb)
+        #: Set by the orchestrator every tick. When True, every agent runs
+        #: on the cheap-tier model chain (survival mode). The ledger spend
+        #: gate still applies on top.
+        self.survival_mode = False
 
     def _child_env(self, ipc_dir: Path | None) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW}
@@ -172,7 +176,7 @@ class OpencodeRunner:
         next model is tried immediately in the same call; the winning model
         sticks (kv) until the daily reset retries the primary.
         """
-        tier = self.config.tier_for(agent)
+        tier = "cheap" if self.survival_mode else self.config.tier_for(agent)
         models = self.config.tier_models(tier)
         if not models:
             self.store.log_run(agent=agent, model="", est_cost_cents=0,
