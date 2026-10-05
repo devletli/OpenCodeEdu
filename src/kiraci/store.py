@@ -504,3 +504,20 @@ class Store:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+    # ---------- freeze flag (Phase 1; human CLI only) ----------
+    def is_frozen(self) -> bool:
+        """True when the human froze the system: all MCP tools must refuse."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO freeze_state(id, frozen) VALUES (1, 0)")
+        row = self.conn.execute(
+            "SELECT frozen FROM freeze_state WHERE id=1").fetchone()
+        return bool(row and row["frozen"])
+
+    def set_frozen(self, frozen: bool) -> bool:
+        """Human-only toggle. Returns the new state."""
+        self.conn.execute(
+            "INSERT INTO freeze_state(id, frozen) VALUES (1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET frozen=excluded.frozen",
+            (1 if frozen else 0,))
+        return self.is_frozen()

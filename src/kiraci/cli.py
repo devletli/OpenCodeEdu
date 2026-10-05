@@ -49,6 +49,7 @@ def cmd_status(ledger: Ledger, store: Store) -> dict[str, Any]:
         "tokens_spent_today_cents": ledger.spent_today("tokens"),
         "spend_today_by_bucket_cents": {
             b: ledger.spent_today(b) for b in ledger.balances()},
+        "frozen": store.is_frozen(),
         "metrics_headline": metrics_headline(root),
         "sandbox_status": sandbox.status(),
         "cost_multiplier": store.kv_get("cost_multiplier", "1.0"),
@@ -196,6 +197,8 @@ def main() -> None:
     vk = vsub.add_parser("kill", help="kill a venture (needs a 80+ char note)")
     vk.add_argument("id", type=int)
     vk.add_argument("--note", required=True)
+    sub.add_parser("freeze", help="freeze all agent tools (human-only)")
+    sub.add_parser("unfreeze", help="unfreeze agent tools (human-only)")
     sub.add_parser("kill", help="stop the daemon after this tick")
     sub.add_parser("resume", help="clear KILL and PAUSE files")
     sub.add_parser("pause", help="pause dispatch")
@@ -309,6 +312,10 @@ def main() -> None:
                                               death_note=args.note)
             except ValueError as e:
                 out = {"status": "error", "reason": str(e)}
+    elif args.cmd == "freeze":
+        out = {"status": "ok", "frozen": store.set_frozen(True)}
+    elif args.cmd == "unfreeze":
+        out = {"status": "ok", "frozen": store.set_frozen(False)}
     elif args.cmd == "kill":
         (root / "data" / "KILL").touch()
         out = {"status": "ok", "detail": "KILL file created"}
@@ -330,6 +337,8 @@ def main() -> None:
         findings = verify_ledger(conn)
         out = {"status": "healthy" if not findings else "findings",
                "findings": findings}
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        sys.exit(0 if not findings else 1)
     elif args.cmd == "backup":
         out = run_backup(conn, root, load_config())
     else:

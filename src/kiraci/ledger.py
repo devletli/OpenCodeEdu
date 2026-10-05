@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -8,6 +9,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .rules import BUCKETS, DEFAULT_POLICY, GENESIS, Policy, decide
+
+
+class _IdempotencyWon(Exception):
+    """Lost a same-key race: roll back our booking, return the winner's."""
 
 
 def ledger_ts() -> str:
@@ -115,38 +120,91 @@ class Ledger:
         )
         return [dict(r) for r in rows]
 
+    # ---------- idempotency (Phase 1) ----------
+    def _check_key(self, key: str | None) -> dict[str, Any] | None:
+        """Stored result for a repeated key, or None. Pure rejections are
+        never memoized: they book nothing, so a retry must re-evaluate
+        against current balances (e.g. income may have arrived since)."""
+        if not key:
+            return None
+        if len(key) > 128:
+            raise ValueError("idempotency key too long (max 128 chars)")
+        row = self.conn.execute(
+            "SELECT result FROM idempotency_keys WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        result = json.loads(row["result"])
+        if not isinstance(result, dict):
+            raise TypeError("corrupt idempotency record")
+        return result
+
+    def _store_key(self, key: str | None, result: dict[str, Any]) -> None:
+        if not key:
+            return
+        try:
+            self.conn.execute(
+                "INSERT INTO idempotency_keys(key, result) VALUES (?,?)",
+                (key, json.dumps(result, ensure_ascii=False, default=str)))
+        except sqlite3.IntegrityError:
+            # Lost a same-key race: roll back OUR booking, return the winner's.
+            raise _IdempotencyWon(key)
+
+    def _winner_result(self, key: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT result FROM idempotency_keys WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return {"status": "error",
+                    "reason": "idempotency race without a stored winner"}
+        result = json.loads(row["result"])
+        if not isinstance(result, dict):
+            raise TypeError("corrupt idempotency record")
+        return result
+
     # ---------- spend requests (open to agents) ----------
     def request_spend(self, agent: str, bucket: str, amount_cents: int, purpose: str,
-                      venture_id: int | None = None) -> dict[str, Any]:
-        with self._tx():
-            bal = self._balances()
-            d = decide(
-                self.policy,
-                bucket=bucket,
-                amount=amount_cents,
-                bucket_balance=bal.get(bucket, 0),
-                total_balance=sum(v for k, v in bal.items() if k != "owner"),
-                spent_today=self._spent_today(bucket),
-            )
-            if d.status == "approved":
-                entry_id = self._insert("expense", bucket, -amount_cents, agent, None,
-                                        purpose, venture_id)
-                aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
-                                         "executed", d.reason, "policy", entry_id,
-                                         venture_id)
-                return {"status": "approved", "approval_id": aid, "entry_id": entry_id,
-                        "reason": d.reason}
-            if d.status == "pending":
-                aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
-                                         "pending", d.reason, venture_id=venture_id)
-                return {"status": "pending", "approval_id": aid, "tier": d.tier,
-                        "reason": d.reason}
-            # rejected: still log for auditing (skip amount <= 0 to satisfy the CHECK)
-            if amount_cents > 0:
-                self._log_approval(agent, bucket, amount_cents, purpose, "none",
-                                   "rejected", d.reason, "policy",
-                                   venture_id=venture_id)
-            return {"status": "rejected", "reason": d.reason}
+                      venture_id: int | None = None,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        try:
+            with self._tx():
+                hit = self._check_key(idempotency_key)
+                if hit is not None:
+                    return hit
+                bal = self._balances()
+                d = decide(
+                    self.policy,
+                    bucket=bucket,
+                    amount=amount_cents,
+                    bucket_balance=bal.get(bucket, 0),
+                    total_balance=sum(v for k, v in bal.items() if k != "owner"),
+                    spent_today=self._spent_today(bucket),
+                )
+                if d.status == "approved":
+                    entry_id = self._insert("expense", bucket, -amount_cents, agent, None,
+                                            purpose, venture_id)
+                    aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
+                                             "executed", d.reason, "policy", entry_id,
+                                             venture_id)
+                    out: dict[str, Any] = {
+                        "status": "approved", "approval_id": aid,
+                        "entry_id": entry_id, "reason": d.reason}
+                    self._store_key(idempotency_key, out)
+                    return out
+                if d.status == "pending":
+                    aid = self._log_approval(agent, bucket, amount_cents, purpose, d.tier,
+                                             "pending", d.reason, venture_id=venture_id)
+                    out = {"status": "pending", "approval_id": aid, "tier": d.tier,
+                           "reason": d.reason}
+                    self._store_key(idempotency_key, out)
+                    return out
+                # rejected: still log for auditing (skip amount <= 0 to satisfy
+                # the CHECK), but never memoized (see _check_key).
+                if amount_cents > 0:
+                    self._log_approval(agent, bucket, amount_cents, purpose, "none",
+                                       "rejected", d.reason, "policy",
+                                       venture_id=venture_id)
+                return {"status": "rejected", "reason": d.reason}
+        except _IdempotencyWon:
+            return self._winner_result(idempotency_key or "")
 
     # ---------- HUMAN / SYSTEM ONLY (never exposed over MCP) ----------
     def init_genesis(self) -> None:
@@ -158,28 +216,44 @@ class Ledger:
                              "genesis budget")
 
     def record_income(self, amount_cents: int, ref: str, note: str = "",
-                      agent: str = "webhook", venture_id: int | None = None) -> dict[str, Any]:
-        """Income split: 50% experiment, 30% emergency, 20% owner. Idempotent via ref."""
+                      agent: str = "webhook", venture_id: int | None = None,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        """Income split: 50% experiment, 30% emergency, 20% owner.
+
+        Idempotent via ref; an explicit idempotency_key additionally returns
+        the exact original result on retry (UNIQUE-guarded).
+        """
         if amount_cents <= 0:
             raise ValueError("income must be positive")
         if not ref:
             raise ValueError("payment reference (ref) is required")
-        with self._tx():
-            if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (f"{ref}:experiment",)).fetchone():
-                return {"status": "duplicate", "ref": ref}
-            reinvest = amount_cents * 50 // 100
-            reserve = amount_cents * 30 // 100
-            owner = amount_cents - reinvest - reserve
-            for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
-                if part > 0:
-                    self._insert("income", bucket, part, agent, f"{ref}:{bucket}",
-                                 note, venture_id)
-            return {"status": "recorded", "experiment": reinvest, "emergency": reserve,
-                    "owner": owner}
+        try:
+            with self._tx():
+                hit = self._check_key(idempotency_key)
+                if hit is not None:
+                    return hit
+                if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (f"{ref}:experiment",)).fetchone():
+                    return {"status": "duplicate", "ref": ref}
+                reinvest = amount_cents * 50 // 100
+                reserve = amount_cents * 30 // 100
+                owner = amount_cents - reinvest - reserve
+                for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
+                    if part > 0:
+                        self._insert("income", bucket, part, agent, f"{ref}:{bucket}",
+                                     note, venture_id)
+                out: dict[str, Any] = {
+                    "status": "recorded", "experiment": reinvest,
+                    "emergency": reserve, "owner": owner}
+                self._store_key(idempotency_key, out)
+                return out
+        except _IdempotencyWon:
+            return self._winner_result(idempotency_key or "")
 
     def record_refund(self, amount_cents: int, ref: str, note: str = "",
-                      agent: str = "webhook", venture_id: int | None = None) -> dict[str, Any]:
-        """Mirror of record_income with negative deltas. Idempotent via ref.
+                      agent: str = "webhook", venture_id: int | None = None,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        """Mirror of record_income with negative deltas. Idempotent via ref
+        (plus the optional idempotency key, same contract as record_income).
 
         Refunds are the ONLY path that may push a bucket negative; spends still
         require a positive balance (see decide()).
@@ -188,18 +262,26 @@ class Ledger:
             raise ValueError("refund must be positive")
         if not ref:
             raise ValueError("payment reference (ref) is required")
-        with self._tx():
-            if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (f"{ref}:experiment",)).fetchone():
-                return {"status": "duplicate", "ref": ref}
-            reinvest = amount_cents * 50 // 100
-            reserve = amount_cents * 30 // 100
-            owner = amount_cents - reinvest - reserve
-            for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
-                if part > 0:
-                    self._insert("refund", bucket, -part, agent, f"{ref}:{bucket}",
-                                 note, venture_id)
-            return {"status": "recorded", "experiment": -reinvest, "emergency": -reserve,
-                    "owner": -owner}
+        try:
+            with self._tx():
+                hit = self._check_key(idempotency_key)
+                if hit is not None:
+                    return hit
+                if self.conn.execute("SELECT 1 FROM ledger WHERE ref=?", (f"{ref}:experiment",)).fetchone():
+                    return {"status": "duplicate", "ref": ref}
+                reinvest = amount_cents * 50 // 100
+                reserve = amount_cents * 30 // 100
+                owner = amount_cents - reinvest - reserve
+                for bucket, part in (("experiment", reinvest), ("emergency", reserve), ("owner", owner)):
+                    if part > 0:
+                        self._insert("refund", bucket, -part, agent, f"{ref}:{bucket}",
+                                     note, venture_id)
+                out = {"status": "recorded", "experiment": -reinvest,
+                       "emergency": -reserve, "owner": -owner}
+                self._store_key(idempotency_key, out)
+                return out
+        except _IdempotencyWon:
+            return self._winner_result(idempotency_key or "")
 
     def record_reconciliation(self, bucket: str, delta_cents: int, ref: str,
                               note: str = "") -> dict[str, Any]:

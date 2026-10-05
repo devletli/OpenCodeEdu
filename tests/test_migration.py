@@ -110,11 +110,13 @@ def _columns(conn, table):
 def test_migrate_upgrades_v02_shape():
     conn = make_v02_db()
     assert schema_version(conn) == 2
-    assert migrate(conn) == CURRENT_SCHEMA_VERSION == 4
-    assert schema_version(conn) == 4
+    assert migrate(conn) == CURRENT_SCHEMA_VERSION == 5
+    assert schema_version(conn) == 5
     assert "venture_id" in [n for n, _ in _columns(conn, "ledger")]
     assert "venture_id" in [n for n, _ in _columns(conn, "approvals")]
     assert "hash" in [n for n, _ in _columns(conn, "ledger")]
+    assert "key" in [n for n, _ in _columns(conn, "idempotency_keys")]
+    assert "frozen" in [n for n, _ in _columns(conn, "freeze_state")]
     # old rows kept
     assert conn.execute("SELECT COUNT(*) c FROM ledger").fetchone()["c"] == 1
     assert conn.execute("SELECT COUNT(*) c FROM human_tasks").fetchone()["c"] == 1
@@ -147,7 +149,7 @@ def test_migrate_twice_changes_nothing():
 
     def snapshot(c):
         tables = ["ledger", "approvals", "human_tasks", "tasks", "runs", "kv",
-                  "ventures", "payments"]
+                  "ventures", "payments", "idempotency_keys", "freeze_state"]
         out = {}
         for t in tables:
             out[t] = _columns(c, t)
@@ -164,7 +166,7 @@ def test_fresh_db_has_same_shape():
     migrated = make_v02_db()
     migrate(migrated)
     tables = ["ledger", "approvals", "human_tasks", "tasks", "runs", "kv",
-              "ventures", "payments"]
+              "ventures", "payments", "idempotency_keys", "freeze_state"]
     for t in tables:
         assert _columns(fresh, t) == _columns(migrated, t), t
     assert schema_version(fresh) == CURRENT_SCHEMA_VERSION

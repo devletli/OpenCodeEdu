@@ -7,7 +7,8 @@ from .ledger import entry_hash
 #: Missing kv value means a v0.2 database.
 V02_VERSION = 2
 V03_VERSION = 3
-CURRENT_SCHEMA_VERSION = 4
+V04_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 #: Exact trigger SQL; verify.py checks these exist verbatim.
 APPEND_ONLY_TRIGGERS = (
@@ -97,8 +98,24 @@ def _human_tasks_has_logged_in_action(conn: sqlite3.Connection) -> bool:
     return row is not None and "logged_in_action" in (row["sql"] or "")
 
 
+IDEMPOTENCY_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS idempotency_keys ("
+    "key TEXT PRIMARY KEY,"
+    "result TEXT NOT NULL,"
+    "ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+    ")"
+)
+
+FREEZE_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS freeze_state ("
+    "id INTEGER PRIMARY KEY CHECK (id = 1),"
+    "frozen INTEGER NOT NULL DEFAULT 0 CHECK (frozen IN (0, 1))"
+    ")"
+)
+
+
 def migrate(conn: sqlite3.Connection) -> int:
-    """Upgrade a v0.2/v0.3 database to the v0.4 shape. Idempotent.
+    """Upgrade a v0.2/v0.3/v0.4 database to the current shape. Idempotent.
 
     v2->v3: venture_id columns, human_tasks CHECK rebuild, ventures+payments.
     v3->v4: the ledger hash chain. The backfill rewrites every row in id order
@@ -106,13 +123,14 @@ def migrate(conn: sqlite3.Connection) -> int:
     recreated here - the only place allowed to do that. Fresh databases (from
     the updated SCHEMA strings) only get the version stamp: every step below
     detects the new shape and skips itself.
+    v4->v5: idempotency_keys + freeze_state tables (plain creates, no backfill).
     """
     if schema_version(conn) >= CURRENT_SCHEMA_VERSION:
         return CURRENT_SCHEMA_VERSION
     conn.execute("BEGIN IMMEDIATE")
     try:
         # NOTE: only conn.execute below, never executescript: executescript
-        # implicitly commits any pending transaction, which would break the
+        # implicitly commits pending transactions, which would break the
         # single-transaction guarantee (and the final COMMIT).
         if "venture_id" not in _columns(conn, "ledger"):
                 conn.execute("ALTER TABLE ledger ADD COLUMN venture_id INTEGER")
@@ -133,9 +151,11 @@ def migrate(conn: sqlite3.Connection) -> int:
         if "hash" not in _columns(conn, "ledger"):
             conn.execute("ALTER TABLE ledger ADD COLUMN hash TEXT")
             _backfill_hash_chain(conn)
+        conn.execute(IDEMPOTENCY_SCHEMA)
+        conn.execute(FREEZE_SCHEMA)
         conn.execute(
-            "INSERT INTO kv(key,value) VALUES ('schema_version','4') "
-            "ON CONFLICT(key) DO UPDATE SET value='4'")
+            "INSERT INTO kv(key,value) VALUES ('schema_version','5') "
+            "ON CONFLICT(key) DO UPDATE SET value='5'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

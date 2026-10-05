@@ -195,6 +195,10 @@ class BrokerSession:
     # ---------- dispatch ----------
     def execute(self, server: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         name = f"{server}_{tool}"
+        if self.store.is_frozen():
+            return {"ok": False,
+                    "error": "frozen: the human froze the system; "
+                             "all agent tools refuse until `kiraci unfreeze`"}
         if not permissions.tool_allowed(self.agent, server, tool):
             return {"ok": False,
                     "error": f"tool {name} is not allowed for this agent"}

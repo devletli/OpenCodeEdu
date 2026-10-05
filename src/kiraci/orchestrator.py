@@ -163,6 +163,7 @@ def build_status(store: Store, ledger: Ledger, now: datetime) -> str:
          f"Burn (7d avg): EUR {burn / 100:.2f}/day  Runway: {runway_str(total, burn)}"),
         (f"Tokens today: EUR {tokens_today / 100:.2f} "
          f"(cap EUR {tokens_cap / 100:.2f})"),
+        f"Frozen: {'YES - agent tools refuse' if store.is_frozen() else 'no'}",
         f"Open human tasks: {len(open_human)}  Pending approvals: {len(pending)}",
         f"Tasks by status: {counts}  Last tick: {last_tick}",
     ]

@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_ledger_bucket ON ledger(bucket);
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key         TEXT PRIMARY KEY,
+    result      TEXT NOT NULL,
+    ts          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS freeze_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    frozen      INTEGER NOT NULL DEFAULT 0 CHECK (frozen IN (0, 1))
+);
 """
 
 
@@ -57,7 +68,9 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
     conn.executescript(QUEUE_SCHEMA)
     migrate(conn)
