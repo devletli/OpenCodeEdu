@@ -15,3 +15,20 @@ data/logs/
 workspace/
 HUMAN_INBOX.md
 data/outputs/
+
+# Dynamic Runtime Data & Agent Artifacts (TASK2.md Phase 1.1)
+/journal/*
+!/journal/.gitkeep
+/research/*
+!/research/.gitkeep
+/products/*
+!/products/.gitkeep
+/scripts/outputs/*
+
+# Local Storage & Databases
+*.db
+*.sqlite3
+*.log
+
+# Environments
+venv/

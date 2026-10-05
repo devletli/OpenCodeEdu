@@ -463,6 +463,26 @@ class Orchestrator:
                 check=False, env=env,
             )
 
+        # TASK2.md Phase 1.2: durable local record in SQLite (best-effort,
+        # never crashes the tick). Git commit below is kept for compatibility.
+        try:
+            from .daemon import save_snapshot
+
+            changed = git(
+                "status", "--porcelain", "--",
+                "research", "journal", "people", "skills",
+            ).stdout.strip()
+            save_snapshot(
+                "git_snapshot",
+                {
+                    "date": now.strftime("%Y-%m-%d"),
+                    "changed_files": changed[:4000],
+                    "root": str(self.root),
+                },
+            )
+        except (OSError, sqlite3.Error, ValueError) as e:
+            print(f"kiraci: snapshot record failed: {e}", flush=True)
+
         git("add", "research", "journal", "people", "skills")
         if not git("status", "--porcelain", "--", "research", "journal",
                    "people", "skills").stdout.strip():
