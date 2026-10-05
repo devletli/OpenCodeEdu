@@ -10,9 +10,9 @@ from kiraci.rules import DEFAULT_POLICY, decide
 
 @pytest.fixture
 def ledger():
-    l = Ledger(connect(":memory:"))
-    l.init_genesis()
-    return l
+    ledger_obj = Ledger(connect(":memory:"))
+    ledger_obj.init_genesis()
+    return ledger_obj
 
 
 def test_genesis_is_100_eur(ledger):
