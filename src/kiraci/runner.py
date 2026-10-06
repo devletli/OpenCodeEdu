@@ -260,16 +260,25 @@ class OpencodeRunner:
             wt = self._worktree_for(agent, Path(cwd))
             in_cwd = wt if wt is not None else self.root
             if self.sandbox.status() == "ok":
-                # The sandbox PATH must contain the directory of the resolved
-                # opencode binary; the venv python used to spawn the MCP
-                # servers lives right next to it (systemd sets the same idea
-                # via PATH=/opt/kiraci/.venv/bin:...).
-                oc_dir = str(Path(cmd[0]).resolve().parent)
+                # The sandbox masks /home and parts of data/, so tool
+                # binaries living there must be re-exposed read-only, and
+                # PATH must resolve them: this interpreter first (it has
+                # kiraci+mcp installed, which MCP servers need), then the
+                # opencode binary's directory. Non-absolute or missing
+                # directories are skipped, never bound.
+                binds: list[str] = []
+                for cand in (str(Path(sys.executable).resolve().parent),
+                             str(Path(cmd[0]).resolve().parent)):
+                    if os.path.isabs(cand) and os.path.isdir(cand) \
+                            and cand not in binds:
+                        binds.append(cand)
+                path_env = ":".join(
+                    binds + [sandbox_mod.DEFAULT_PATH_ENV])
                 cmd = sandbox_mod.build_command(
                     project=self.root, ipc_dir=ipc_dir, sandbox_home=home,
                     worktree=wt, cwd=in_cwd, cmd=cmd,
                     bwrap=str(self.config.sandbox_value("bwrap")),
-                    path_env=f"{oc_dir}:{sandbox_mod.DEFAULT_PATH_ENV}")
+                    path_env=path_env, extra_ro_binds=binds)
         start = time.monotonic()
         try:
             try:

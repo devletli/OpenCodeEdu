@@ -37,8 +37,14 @@ _PROBE_TTL_S = 60.0
 def build_command(
     *, project: Path, ipc_dir: Path, sandbox_home: Path, worktree: Path | None,
     cwd: Path, cmd: list[str], bwrap: str = "bwrap", path_env: str = DEFAULT_PATH_ENV,
+    extra_ro_binds: list[str] | None = None,
 ) -> list[str]:
-    """Build the bwrap argv for one agent run. Pure: touches nothing."""
+    """Build the bwrap argv for one agent run. Pure: touches nothing.
+
+    extra_ro_binds re-exposes host directories that earlier mounts hide
+    (e.g. tool binaries living under the masked /home): mounted read-only,
+    after the worktree bind so they cannot shadow it.
+    """
     project = Path(project)
     c = [
         bwrap,
@@ -54,6 +60,8 @@ def build_command(
     ]
     if worktree is not None:
         c += ["--bind", str(worktree), str(worktree)]
+    for bind in extra_ro_binds or []:
+        c += ["--ro-bind", bind, bind]
     c += [
         "--unshare-pid", "--unshare-ipc", "--unshare-uts",
         "--new-session", "--die-with-parent",

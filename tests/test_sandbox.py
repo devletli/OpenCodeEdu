@@ -65,6 +65,25 @@ def test_worktree_mounted_only_when_given(tmp_path):
     assert cmd[unshare - 3:unshare - 1] == ["--bind", str(wt)]
 
 
+def test_extra_ro_binds_reexpose_masked_tool_dirs(tmp_path):
+    """Tool binaries under masked trees (/home) must be re-exposed read-only,
+    after the worktree bind so they cannot shadow it (live bug: bwrap execvp
+    failed on the opencode binary hidden by --tmpfs /home)."""
+    wt = tmp_path / "workspace" / "task-1"
+    cmd = build_command(project=tmp_path, ipc_dir=tmp_path / "ipc",
+                        sandbox_home=tmp_path / "home", worktree=wt,
+                        cwd=wt, cmd=make_cmd(),
+                        extra_ro_binds=["/home/dev/.opencode/bin",
+                                        "/home/dev/kiraci-venv/bin"])
+    unshare = cmd.index("--unshare-pid")
+    assert cmd[unshare - 9:unshare] == [
+        "--bind", str(wt), str(wt),
+        "--ro-bind", "/home/dev/.opencode/bin", "/home/dev/.opencode/bin",
+        "--ro-bind", "/home/dev/kiraci-venv/bin",
+        "/home/dev/kiraci-venv/bin"]
+    assert cmd.count("--ro-bind") == 4  # / + .env mask + 2 extra
+
+
 def test_env_mask_covers_secrets_file(tmp_path):
     cmd = build_command(project=tmp_path, ipc_dir=tmp_path / "ipc",
                         sandbox_home=tmp_path / "home", worktree=None,
