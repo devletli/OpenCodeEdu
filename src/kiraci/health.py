@@ -95,6 +95,18 @@ class HealthRunner:
         if self.log is None:
             from .logsetup import get_logger
             self.log = get_logger(self.root)
+        self._children: list[Any] = []
+
+    def _reap_children(self) -> None:
+        """Reap finished spawns so they never linger as zombies."""
+        alive = []
+        for proc in self._children:
+            try:
+                if proc.poll() is None:
+                    alive.append(proc)
+            except OSError:
+                pass
+        self._children = alive
 
     def now(self) -> datetime:
         now = self.clock()
@@ -198,6 +210,9 @@ class HealthRunner:
         return actions
 
     def _recover_daemon(self, now: datetime) -> list[str]:
+        alive = _daemon_alive(self.root, now)
+        if alive is not None:
+            return [alive + ": not spawning (long run in progress?)"]
         if self.store.kv_get("health_daemon_started"):
             return []  # already restarted once; wait for its first tick
         try:
@@ -207,6 +222,7 @@ class HealthRunner:
         except OSError as e:
             self.log.error("health: daemon start failed: %s", e)
             return [f"daemon start failed: {e}"]
+        self._children.append(proc)
         self.store.kv_set("health_daemon_started", now.isoformat())
         self._notice_once(now, "daemon-restart",
                           "Health check restarted the Kiraci daemon "
@@ -260,6 +276,7 @@ class HealthRunner:
     # ---------- loop ----------
     def cycle(self) -> tuple[list[Finding], list[str]]:
         now = self.now()
+        self._reap_children()
         findings = self.check(now)
         actions = self.recover(findings, now)
         bad = [f"{f.name}:{f.detail}" for f in findings if not f.ok]
@@ -301,6 +318,47 @@ class HealthRunner:
                 sleep(step)
                 waited += step
         return 0
+
+
+#: A daemon pidfile fresher than this (with a matching process) means
+#: "alive but blocked in a long run" rather than dead: tick heartbeats
+#: stall while a single-threaded tick waits on an agent run.
+DAEMON_PID_FRESH_S = 30 * 60
+
+
+def _proc_cmdline(pid: int) -> str | None:
+    """Process command line (Linux /proc); None when unreadable."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().decode(errors="replace").replace("\x00", " ")
+    except OSError:
+        return None
+
+
+def _daemon_alive(root: Path, now: datetime) -> str | None:
+    """Describe the live daemon if provable, else None.
+
+    Needs all three: a fresh pidfile, a living pid, and a kiraci command
+    line (guards against pid reuse). Any failure falls through to None so
+    recovery stays fail-open (a missed spawn is safer than a duplicate).
+    """
+    try:
+        pid_raw, ts_raw, *_ = (root / "data" / "daemon.pid").read_text(
+            encoding="utf-8").splitlines()
+        pid = int(pid_raw.strip())
+        ts = _parse_ts(ts_raw.strip())
+    except (OSError, ValueError):
+        return None
+    if ts is None or (now - ts).total_seconds() > DAEMON_PID_FRESH_S:
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    cmdline = _proc_cmdline(pid) or ""
+    if "kiraci" not in cmdline:
+        return None
+    return f"daemon alive (pid {pid})"
 
 
 def _parse_ts(raw: object) -> datetime | None:

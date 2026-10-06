@@ -191,6 +191,20 @@ class Orchestrator:
             now = now.replace(tzinfo=UTC)
         return now
 
+    def _write_daemon_pidfile(self, iso: str) -> None:
+        """Liveness heartbeat for the health watchdog.
+
+        Written every tick (not only on dispatch): a live but blocked
+        daemon (long agent run) keeps a fresh pid while last_tick stalls,
+        so the watchdog can tell "busy" apart from "dead".
+        """
+        try:
+            (self.root / "data").mkdir(parents=True, exist_ok=True)
+            (self.root / "data" / "daemon.pid").write_text(
+                f"{os.getpid()}\n{iso}\n", encoding="utf-8")
+        except OSError as e:
+            self.log.warning("daemon pidfile failed: %s", e)
+
     # ---------- startup ----------
     def startup(self) -> None:
         for d in ALL_DIRS:
@@ -730,6 +744,7 @@ class Orchestrator:
         now = self.now()
         iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.store.kv_set("last_tick", iso)
+        self._write_daemon_pidfile(iso)
         if (self.root / "data" / "KILL").exists():
             self.stopped = True
             return f"{iso} killed"

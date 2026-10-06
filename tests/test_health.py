@@ -142,6 +142,89 @@ def test_sandbox_finding_never_blocks(tmp_path):
     assert actions == []
 
 
+def test_tick_writes_daemon_pidfile(tmp_path, monkeypatch):
+    import os
+
+    from kiraci.config import Config
+    from kiraci.db import connect
+    from kiraci.ledger import Ledger
+    from kiraci.orchestrator import Orchestrator
+    from kiraci.store import Store
+    from kiraci.testing import FakeRunner
+
+    conn = connect(":memory:")
+    ledger = Ledger(conn)
+    ledger.init_genesis()
+    orch = Orchestrator(root=tmp_path, store=Store(conn), ledger=ledger,
+                        config=Config(), runner=FakeRunner())
+    orch.tick()
+    pid_raw, *_ = (tmp_path / "data" / "daemon.pid").read_text(
+        encoding="utf-8").splitlines()
+    assert int(pid_raw.strip()) == os.getpid()
+
+
+def test_health_skips_spawn_when_daemon_provably_alive(tmp_path, monkeypatch):
+    import os
+
+    import kiraci.health as health_mod
+
+    def no_spawn(*a, **k):
+        raise AssertionError("daemon is alive: must not spawn")
+
+    runner, store, _ = make_runner(tmp_path, NOW, spawn=no_spawn)
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "daemon.pid").write_text(
+        f"{os.getpid()}\n{NOW.strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+        encoding="utf-8")
+    monkeypatch.setattr(health_mod, "_proc_cmdline",
+                        lambda pid: "python -m kiraci.cli run")
+    findings = runner.check(NOW)
+    assert next(f for f in findings if f.name == "tick").ok is False
+    actions = runner.recover(findings, NOW)
+    assert any("daemon alive" in a for a in actions)
+    assert store.kv_get("health_daemon_started") is None
+
+
+def test_health_spawns_when_pidfile_pid_is_dead(tmp_path):
+    spawned = []
+    runner, _store, _ = make_runner(
+        tmp_path, NOW, spawn=lambda argv, cwd: spawned.append(argv)
+        or type("P", (), {"pid": 4242, "poll": lambda self: 0})())
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "daemon.pid").write_text(
+        "999999999\n" + NOW.strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+        encoding="utf-8")
+    actions = runner.recover(runner.check(NOW), NOW)
+    assert any("restarted" in a for a in actions)
+    assert len(spawned) == 1
+
+
+def test_health_reaps_finished_children(tmp_path):
+    from types import SimpleNamespace
+
+    runner, _, _ = make_runner(tmp_path, NOW)
+    runner._children.append(SimpleNamespace(poll=lambda: 0))
+    runner._children.append(SimpleNamespace(poll=lambda: None))
+    runner._reap_children()
+    assert len(runner._children) == 1
+
+
+def test_daemon_alive_rejects_pid_reuse(tmp_path, monkeypatch):
+    import os
+
+    import kiraci.health as health_mod
+    from kiraci.health import _daemon_alive
+
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "daemon.pid").write_text(
+        f"{os.getpid()}\n{NOW.strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+        encoding="utf-8")
+    monkeypatch.setattr(health_mod, "_proc_cmdline",
+                        lambda pid: "pytest -q tests/")
+    assert _daemon_alive(tmp_path, NOW) is None
+    assert _daemon_alive(tmp_path / "missing", NOW) is None
+
+
 def test_pidfile_claim_and_stale(tmp_path):
     assert claim_pidfile(tmp_path) is True
     assert claim_pidfile(tmp_path) is True  # same process re-claims
